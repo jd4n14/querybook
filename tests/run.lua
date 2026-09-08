@@ -3,6 +3,7 @@ vim.opt.rtp:prepend(root)
 local parser = require("querybook.parser")
 local runner = require("querybook.runner")
 local risk = require("querybook.risk")
+local render = require("querybook.render")
 local function eq(actual, expected, message)
   assert(vim.deep_equal(actual, expected), (message or "values differ") .. "\nactual=" .. vim.inspect(actual) .. "\nexpected=" .. vim.inspect(expected))
 end
@@ -12,6 +13,44 @@ assert(#statements == 2, "quoted semicolon must not split a statement")
 assert(parser.statement_at(statements, 1).text == "select 1 as one;")
 assert(parser.statement_at(statements, 3).text == "select ';' as semi;")
 eq(runner.parse_output("id\tname\n1\talpha\n2\tbeta\n"), { columns = { "id", "name" }, rows = { { id = "1", name = "alpha" }, { id = "2", name = "beta" } } }, "tab output")
+local xml_fixture = [[<?xml version="1.0"?>
+<resultset statement="fixture" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><row>
+<field name="sql_null" xsi:nil="true" /><field name="literal_null">NULL</field>
+<field name="empty"></field><field name="special">a\tb\n\c &amp; &lt;ok&gt;</field>
+<field name="unicode">café · 東京</field><field name="decimal">123456789012345678901234567890.12345678901234567890</field>
+</row></resultset>]]
+local xml_result = runner.parse_xml(xml_fixture)
+eq(xml_result.columns, { "sql_null", "literal_null", "empty", "special", "unicode", "decimal" }, "MySQL XML columns")
+assert(xml_result.rows[1]._null.sql_null == true, "XML SQL NULL marker")
+assert(xml_result.rows[1].literal_null == "NULL", "XML literal NULL")
+assert(xml_result.rows[1].empty == "", "XML empty string")
+assert(xml_result.rows[1].special == "a\\tb\\n\\c & <ok>", "XML escaped scalar")
+assert(xml_result.rows[1].decimal == "123456789012345678901234567890.12345678901234567890", "XML exact decimal")
+local rendered = render.lines({ status = "success", rows = { { value = "abcdefghijklmnopqrstuvwxyz" } }, columns = { "value" }, connection_name = "profile", database = "db", duration_ms = 1 }, { max_rows = 1, max_columns = 1, max_value_length = 5, max_column_width = 10 })
+local rendered_text = table.concat(vim.tbl_map(function(line) return line[1][1] end, rendered), "\n")
+assert(rendered_text:find("values clipped to 5", 1, true), "inline value truncation is explicit")
+local collapsed = render.lines({ status = "success", rows = { { value = "x" } }, columns = { "value" }, collapsed = true, connection_name = "profile", database = "db", duration_ms = 1 }, {})
+assert(table.concat(vim.tbl_map(function(line) return line[1][1] end, collapsed), "\n"):find("collapsed", 1, true), "result collapse is per result")
+if vim.env.QUERYBOOK_MYSQL_TEST == "1" then
+  local mysql_result, mysql_error
+  runner.run({ driver = "mysql", socket = vim.env.QUERYBOOK_MYSQL_SOCKET, host = vim.env.QUERYBOOK_MYSQL_HOST,
+    port = vim.env.QUERYBOOK_MYSQL_PORT, user = vim.env.QUERYBOOK_MYSQL_USER or "root",
+    database = vim.env.QUERYBOOK_MYSQL_DATABASE, password = vim.env.QUERYBOOK_MYSQL_PASSWORD }, [[
+      SELECT NULL AS sql_null, 'NULL' AS literal_null, '' AS empty_value,
+        CONCAT('a', CHAR(9), 'b', CHAR(10), CHAR(92), 'c') AS special,
+        'café · 東京' AS unicode_value,
+        '123456789012345678901234567890.12345678901234567890' AS exact_decimal,
+        '9223372036854775807' AS exact_bigint
+    ]], function(data, err) mysql_result, mysql_error = data, err end)
+  assert(vim.wait(10000, function() return mysql_result ~= nil or mysql_error ~= nil end), "live MySQL fixture completed")
+  assert(not mysql_error, mysql_error or "live MySQL fixture failed")
+  local row = mysql_result.rows[1]
+  assert(mysql_result.format == "mysql-xml", "live MySQL uses XML transport")
+  assert(mysql_result.columns[#mysql_result.columns] == "exact_bigint", "live MySQL column order")
+  assert(row._null.sql_null and row.literal_null == "NULL" and row.empty_value == "", "live MySQL null and empty values")
+  assert(row.special == "a\tb\n\\c" and row.unicode_value == "café · 東京", "live MySQL special characters")
+  assert(row.exact_decimal == "123456789012345678901234567890.12345678901234567890" and row.exact_bigint == "9223372036854775807", "live MySQL exact numerics")
+end
 assert(risk.analyze("delete from sample;").dangerous, "lowercase DELETE is guarded")
 assert(risk.analyze("UPDATE sample SET name = 'x';").dangerous, "uppercase UPDATE without WHERE is guarded")
 assert(risk.analyze("-- comment\ninsert into sample values (3, 'gamma');").dangerous, "commented INSERT is guarded")
@@ -72,5 +111,12 @@ querybook.run({ force = true })
 vim.wait(300)
 local count_after_force = vim.system({ "sqlite3", db, "select count(*) from sample;" }, { text = true }):wait()
 assert((count_after_force.stdout or ""):match("1"), "explicit force allows a write")
+
+-- A visual selection containing two statements keeps separate result anchors.
+querybook.clear(true)
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "select 1 as first;", "", "select 2 as second;" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+querybook.run({ range = 1, line1 = 1, line2 = 3 })
+assert(vim.wait(3000, function() return #vim.api.nvim_buf_get_extmarks(0, querybook_ns, 0, -1, {}) == 2 end), "multi-statement selection keeps two results")
 print("querybook tests passed")
 vim.cmd("qa!")

@@ -1,0 +1,13 @@
+:QuerybookClear	querybook.txt	/*:QuerybookClear*
+:QuerybookClear!	querybook.txt	/*:QuerybookClear!*
+:QuerybookInspect	querybook.txt	/*:QuerybookInspect*
+:QuerybookRefresh	querybook.txt	/*:QuerybookRefresh*
+:QuerybookRun	querybook.txt	/*:QuerybookRun*
+:QuerybookToggle	querybook.txt	/*:QuerybookToggle*
+Querybook	querybook.txt	/*Querybook*
+querybook-commands	querybook.txt	/*querybook-commands*
+querybook-config	querybook.txt	/*querybook-config*
+querybook-inspector	querybook.txt	/*querybook-inspector*
+querybook-transport	querybook.txt	/*querybook-transport*
+querybook.contents	querybook.txt	/*querybook.contents*
+querybook.txt	querybook.txt	/*querybook.txt*

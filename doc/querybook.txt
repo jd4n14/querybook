@@ -1,0 +1,75 @@
+*querybook.txt*  Querybook SQL notebook for Neovim
+
+===============================================================================
+CONTENTS                                                        *querybook.contents*
+
+                                                        *Querybook*
+Querybook keeps SQL in the current buffer and renders each execution below its
+statement using virtual lines. Results remain independent when another
+statement is run.
+
+COMMANDS                                                        *querybook-commands*
+
+:QuerybookRun                                                     *:QuerybookRun*
+    Run the statement under the cursor. In visual mode, run the selected SQL;
+    multiple statements receive independent result anchors. Use :QuerybookRun!
+    to explicitly allow a write blocked by the basic safety guard.
+
+:QuerybookInspect                                             *:QuerybookInspect*
+    Open the full retained result in a vertical scratch view. The view includes
+    the execution profile, driver, database, all rows, and full field values.
+
+:QuerybookRefresh                                             *:QuerybookRefresh*
+    Re-run the statement under the cursor with the active connection.
+
+:QuerybookToggle                                             *:QuerybookToggle*
+    Collapse or expand only the result attached to the statement under the
+    cursor. Inspection remains available while a result is collapsed.
+
+:QuerybookClear                                                   *:QuerybookClear*
+    Clear the result attached to the statement under the cursor.
+
+:QuerybookClear!                                                  *:QuerybookClear!*
+    Clear every result in the current SQL buffer.
+
+INSPECTOR                                                     *querybook-inspector*
+
+In a QuerybookInspect scratch window, use these normal-mode mappings:
+
+    yv          Copy the exact field value under the cursor. SQL NULL is copied
+                as the textual marker NULL; row and payload copies retain its
+                null type.
+    yr          Copy the current row as ordered JSON, preserving values as
+                strings and SQL NULL as JSON null.
+    yp          Copy the complete result payload as ordered JSON.
+    q           Close the inspector window.
+
+JSON-shaped field values are formatted for navigation in the inspector. Copy
+operations use the retained raw strings, so tabs, newlines, Unicode, decimals,
+and large integers are not rounded or clipped.
+
+CONFIGURATION                                                  *querybook-config*
+
+Each connection has driver = "sqlite" or driver = "mysql". MySQL accepts
+host, port, socket, user, database, password, and charset (utf8mb4 is the
+default). Results capture the selected connection profile and database when
+they execute; changing the active connection does not rewrite existing result
+metadata.
+
+The inline display reads these limits, while retaining the complete result:
+
+    max_rows               Maximum visible rows (default 50)
+    max_columns            Maximum visible columns (default 12)
+    max_value_length       Maximum displayed value characters (default 128)
+    max_column_width       Maximum table cell width (default 32)
+
+Every hidden or clipped dimension is labelled and QuerybookInspect remains
+available for the full result.
+
+TRANSPORT                                                     *querybook-transport*
+
+MySQL uses the mysql client's escaped XML batch output. Values remain strings;
+SQL NULL is recorded as row._null[column] = true, while empty strings and a
+literal "NULL" remain distinguishable. SQLite keeps its tab output transport.
+
+ vim:tw=78:ts=8:ft=help:norl:

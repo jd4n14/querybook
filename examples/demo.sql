@@ -1,5 +1,7 @@
 -- Run both statements with :QuerybookRun while the cursor is in each one.
--- Their virtual result tables remain attached below their statements.
-select 1 as id, 'notebook' as state;
+-- Inspect the order payload, then return to the second result: each is kept.
+select 1001 as order_id,
+  '{"customer":"Ana","items":[{"sku":"SKU-9","qty":2}]}' as order_payload;
 
-select 'Run :QuerybookInspect on this statement for a copyable view' as note;
+select 'warehouse.default' as setting,
+  '{"pick_wave":"morning","cutoff":"18:30","enabled":true}' as configuration;
