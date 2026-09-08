@@ -14,4 +14,14 @@ func TestConservativeBypassMatrix(t *testing.T) {
 			t.Errorf("denied read %q: %s", sql, d.Reason)
 		}
 	}
+	for _, sql := range []string{"WITH c AS (SELECT 1) SELECT * FROM c", "WITH c AS (SELECT 'DELETE') SELECT * FROM c"} {
+		if d := Classify(sql); !d.Allowed {
+			t.Errorf("denied read-only CTE %q: %s", sql, d.Reason)
+		}
+	}
+	for _, sql := range []string{"WITH c AS (SELECT 1) DELETE FROM t", "WITH c AS (SELECT 1) SELECT * FROM c INTO OUTFILE '/tmp/x'"} {
+		if d := Classify(sql); d.Allowed {
+			t.Errorf("allowed unsafe CTE %q", sql)
+		}
+	}
 }

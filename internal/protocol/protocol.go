@@ -80,6 +80,8 @@ type Event struct {
 	AffectedRows     int64    `json:"affected_rows,omitempty"`
 	Truncated        bool     `json:"truncated,omitempty"`
 	TruncationReason string   `json:"truncation_reason,omitempty"`
+	AutoLimitApplied bool     `json:"auto_limit_applied,omitempty"`
+	AutoLimitReason  string   `json:"auto_limit_reason,omitempty"`
 	RetainedBytes    int64    `json:"retained_bytes,omitempty"`
 	Code             string   `json:"code,omitempty"`
 	Message          string   `json:"message,omitempty"`

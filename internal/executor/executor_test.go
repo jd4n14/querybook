@@ -159,3 +159,72 @@ func TestCanceledExecutionClosesCleanly(t *testing.T) {
 		t.Fatal("canceled execution succeeded")
 	}
 }
+
+func TestAutoLimitIsTopLevelAndQuoteCommentAware(t *testing.T) {
+	tests := []struct {
+		name    string
+		sql     string
+		want    string
+		applied bool
+	}{
+		{"plain", "SELECT * FROM t", "SELECT * FROM t LIMIT 500", true},
+		{"semicolon", "SELECT * FROM t;", "SELECT * FROM t LIMIT 500;", true},
+		{"trailing comment", "SELECT * FROM t -- LIMIT 3\n", "SELECT * FROM t LIMIT 500 -- LIMIT 3\n", true},
+		{"quoted limit", "SELECT 'LIMIT 3' AS text", "SELECT 'LIMIT 3' AS text LIMIT 500", true},
+		{"subquery limit", "SELECT * FROM (SELECT * FROM t LIMIT 3) AS x", "SELECT * FROM (SELECT * FROM t LIMIT 3) AS x LIMIT 500", true},
+		{"cte outer limit", "WITH x AS (SELECT * FROM t LIMIT 3) SELECT * FROM x", "WITH x AS (SELECT * FROM t LIMIT 3) SELECT * FROM x LIMIT 500", true},
+		{"cte dml unchanged", "WITH x AS (SELECT 1) DELETE FROM t", "WITH x AS (SELECT 1) DELETE FROM t", false},
+		{"union", "SELECT 1 UNION SELECT 2", "SELECT 1 UNION SELECT 2 LIMIT 500", true},
+		{"mysql double dash operator", "SELECT 1--2", "SELECT 1--2 LIMIT 500", true},
+		{"parenthesized expression", "SELECT (1)", "SELECT (1) LIMIT 500", true},
+		{"reserved column offset", "SELECT offset FROM t", "SELECT offset FROM t LIMIT 500", true},
+		{"reserved column lock", "SELECT lock FROM t", "SELECT lock FROM t LIMIT 500", true},
+		{"reserved column fetch", "SELECT fetch AS x FROM t", "SELECT fetch AS x FROM t LIMIT 500", true},
+		{"reserved column limit", "SELECT limit FROM t", "SELECT limit FROM t LIMIT 500", true},
+		{"explicit outer limit", "WITH x AS (SELECT * FROM t LIMIT 3) SELECT * FROM x LIMIT 9", "WITH x AS (SELECT * FROM t LIMIT 3) SELECT * FROM x LIMIT 9", false},
+		{"fetch unchanged", "SELECT * FROM t FETCH FIRST 3 ROWS ONLY", "SELECT * FROM t FETCH FIRST 3 ROWS ONLY", false},
+		{"into unchanged", "SELECT * FROM t INTO OUTFILE '/tmp/x'", "SELECT * FROM t INTO OUTFILE '/tmp/x'", false},
+		{"show unchanged", "SHOW TABLES", "SHOW TABLES", false},
+		{"malformed unchanged", "SELECT 'unterminated", "SELECT 'unterminated", false},
+	}
+	for _, tt := range tests {
+		got, applied := addAutoLimit(tt.sql)
+		if got != tt.want || applied != tt.applied {
+			t.Errorf("%s: got %q/%v, want %q/%v", tt.name, got, applied, tt.want, tt.applied)
+		}
+	}
+}
+
+func TestAutoLimitExecutionBoundsOnlyUnqualifiedSelects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "many.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec("CREATE TABLE t (v INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 600; i++ {
+		if _, err = db.Exec("INSERT INTO t(v) VALUES (?)", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	base := protocol.Request{Version: 1, Type: "execute", RequestID: "r", ExecutionID: "e", Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: "SELECT v FROM t ORDER BY v"}
+	got, err := Execute(context.Background(), base, func(protocol.Event) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AutoLimit || len(got.Rows) != 500 {
+		t.Fatalf("auto limit result=%#v", got)
+	}
+	explicit := base
+	explicit.SQL = "SELECT v FROM t ORDER BY v LIMIT 3"
+	got, err = Execute(context.Background(), explicit, func(protocol.Event) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AutoLimit || len(got.Rows) != 3 {
+		t.Fatalf("explicit limit result=%#v", got)
+	}
+}

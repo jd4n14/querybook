@@ -26,6 +26,18 @@ COMMANDS                                                        *querybook-comma
     Collapse or expand only the result attached to the statement under the
     cursor. Inspection remains available while a result is collapsed.
 
+:QuerybookNextPage                                         *:QuerybookNextPage*
+    Show the next page of retained rows for the result under the cursor.
+
+:QuerybookPrevPage                                         *:QuerybookPrevPage*
+    Show the previous page of retained rows for the result under the cursor.
+
+:QuerybookNextColumn                                     *:QuerybookNextColumn*
+    Show the next page of retained columns for the result under the cursor.
+
+:QuerybookPrevColumn                                     *:QuerybookPrevColumn*
+    Show the previous page of retained columns for the result under the cursor.
+
 :QuerybookClear                                                   *:QuerybookClear*
     Clear the result attached to the statement under the cursor.
 
@@ -58,8 +70,9 @@ active connection does not rewrite existing result metadata.
 
 The inline display reads these limits, while retaining the complete result:
 
-    max_rows               Maximum visible rows (default 50)
-    max_columns            Maximum visible columns (default 12)
+    preview_rows           Rows per inline viewport page (default 10)
+    max_rows               Legacy alias for preview_rows when preview_rows is absent
+    max_columns            Columns per inline viewport page (default 12)
     max_value_length       Maximum displayed value characters (default 128)
     max_column_width       Maximum table cell width (default 32)
 
@@ -71,7 +84,10 @@ The inline display reads these limits, while retaining the complete result:
     batch_bytes             JSONL batch byte bound (default 512 KiB)
 
 Every hidden or clipped dimension is labelled and QuerybookInspect remains
-available for the full result.
+available for the full result. Top-level SELECT statements without an outer
+LIMIT receive a Go-runner `LIMIT 500`; explicit outer limits and nested or
+commented LIMIT text are preserved. The inline header reports this automatic
+limit separately from the visible row page and retention status.
 
 TRANSPORT                                                     *querybook-transport*
 

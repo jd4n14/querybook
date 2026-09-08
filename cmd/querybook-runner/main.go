@@ -70,7 +70,7 @@ func (r *runner) execute(req protocol.Request) {
 			cancel()
 			return
 		}
-		_ = r.send(protocol.Event{Version: 1, Type: "result_end", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, DurationMS: time.Since(start).Milliseconds(), ResultSets: res.ResultSets, RowCount: int64(len(res.Rows)), ObservedRows: res.Observed, RetainedBytes: res.RetainedBytes, Truncated: res.Truncated, TruncationReason: res.Reason, AffectedRows: res.Affected, Terminal: true})
+		_ = r.send(protocol.Event{Version: 1, Type: "result_end", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, DurationMS: time.Since(start).Milliseconds(), ResultSets: res.ResultSets, RowCount: int64(len(res.Rows)), ObservedRows: res.Observed, RetainedBytes: res.RetainedBytes, Truncated: res.Truncated, TruncationReason: res.Reason, AutoLimitApplied: res.AutoLimit, AutoLimitReason: res.AutoLimitWhy, AffectedRows: res.Affected, Terminal: true})
 		cancel()
 	}()
 }

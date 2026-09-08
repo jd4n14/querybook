@@ -55,6 +55,8 @@ type Result struct {
 	Reason        string
 	Affected      int64
 	ResultSets    int
+	AutoLimit     bool
+	AutoLimitWhy  string
 }
 
 func dsn(c protocol.Connection) (string, error) {
@@ -191,10 +193,11 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 		}
 		return Result{ResultSets: 1, Affected: affected}, nil
 	}
+	executedSQL, autoLimit := addAutoLimit(req.SQL)
 	if tx != nil {
-		rows, err = tx.QueryContext(ctx, req.SQL)
+		rows, err = tx.QueryContext(ctx, executedSQL)
 	} else {
-		rows, err = conn.QueryContext(ctx, req.SQL)
+		rows, err = conn.QueryContext(ctx, executedSQL)
 	}
 	if err != nil {
 		return Result{}, queryError(ctx, err)
@@ -202,6 +205,10 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 	defer rows.Close()
 	l := limits(req)
 	out := Result{}
+	out.AutoLimit = autoLimit
+	if autoLimit {
+		out.AutoLimitWhy = "top-level SELECT had no explicit LIMIT"
+	}
 	for {
 		out.ResultSets++
 		cols, err := rows.ColumnTypes()

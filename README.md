@@ -67,13 +67,20 @@ following commands are available:
 :QuerybookClear     " clear the current result
 :QuerybookClear!    " clear all results in the buffer
 :QuerybookToggle    " collapse or expand only the result under the cursor
+:QuerybookNextPage  " show the next retained row page
+:QuerybookPrevPage  " show the previous retained row page
+:QuerybookNextColumn " show the next retained column page
+:QuerybookPrevColumn " show the previous retained column page
 ```
 
 Select lines in visual mode before `:QuerybookRun` to execute that selection;
 multiple statements receive independent result anchors. A result is marked
 stale as soon as its statement text changes.
 An execution error is rendered below the statement and does not delete the
-previous successful result until a new successful execution replaces it.
+previous successful result until a new successful execution replaces it. Each
+statement has one result slot, so repeated failures do not stack duplicate
+error blocks; a later success replaces that slot. Results from statements that
+remain in the notebook stay independently anchored.
 
 ## Connection configuration
 
@@ -89,9 +96,13 @@ output, or logs. Set `runner_path` for a custom installation; otherwise run
 
 ## Current boundary
 
-Inline output is bounded for readability by `max_rows`, `max_columns`,
-`max_value_length`, and `max_column_width`; each hidden or clipped dimension is
-labelled explicitly. The runner retains at most `max_retained_rows` rows or
+Inline output is a compact viewport showing 10 rows by default. Use
+`:QuerybookNextPage`/`:QuerybookPrevPage` or the `<leader>qN`/`<leader>qP`
+mappings to page retained rows, and `:QuerybookNextColumn`/`:QuerybookPrevColumn`
+or `<leader>qL`/`<leader>qH` to page columns. Configure `preview_rows` and
+`max_columns` to change the page size; legacy `max_rows` is honored as a
+preview override when `preview_rows` is not set. Every hidden or clipped
+dimension is labelled explicitly. The runner retains at most `max_retained_rows` rows or
 `max_retained_bytes` bytes (defaults 10000 and 16 MiB), and labels truncation.
 `QuerybookInspect` opens a vertical, navigable view with connection
 profile and database captured at execution time. JSON shaped values are
@@ -106,8 +117,13 @@ exact numeric spellings, empty strings, literal `NULL`, Unicode, and arbitrary
 bytes are preserved. Sessions are isolated per execution. Unforced reads use
 driver-level read-only boundaries; `:QuerybookRun!` or `allow_writes=true` is
 required for writes. A visual selection containing multiple statements creates
-an independent result for each statement. Snapshots, semantic comparison, and
-DDL lookup remain out of scope.
+an independent result for each statement. For a top-level `SELECT` without an
+outer `LIMIT`, the Go runner adds an authoritative `LIMIT 500` while
+preserving the SQL buffer. Strings, comments, subqueries, CTE limits, explicit
+outer limits, and unsupported forms are handled conservatively. The header
+reports the automatic limit separately from the visible 10-row viewport and
+retention status. Snapshots, semantic comparison, and DDL lookup remain out
+of scope.
 
 ## Tests
 
