@@ -16,7 +16,7 @@ COMMANDS                                                        *querybook-comma
     to explicitly allow a write blocked by the basic safety guard.
 
 :QuerybookInspect                                             *:QuerybookInspect*
-    Open the full retained result in a vertical scratch view. The view includes
+    Open the bounded retained result in a vertical scratch view. The view includes
     the execution profile, driver, database, all rows, and full field values.
 
 :QuerybookRefresh                                             *:QuerybookRefresh*
@@ -52,9 +52,9 @@ CONFIGURATION                                                  *querybook-config
 
 Each connection has driver = "sqlite" or driver = "mysql". MySQL accepts
 host, port, socket, user, database, password, and charset (utf8mb4 is the
-default). Results capture the selected connection profile and database when
-they execute; changing the active connection does not rewrite existing result
-metadata.
+default). Passwords are sent only through child stdin. Results capture the
+selected connection profile and database when they execute; changing the
+active connection does not rewrite existing result metadata.
 
 The inline display reads these limits, while retaining the complete result:
 
@@ -63,13 +63,22 @@ The inline display reads these limits, while retaining the complete result:
     max_value_length       Maximum displayed value characters (default 128)
     max_column_width       Maximum table cell width (default 32)
 
+    runner_path             Optional installed querybook-runner executable
+    timeout_ms              Query timeout (default 30000)
+    max_retained_rows       Runner retention bound (default 10000)
+    max_retained_bytes      Runner retention bytes (default 16 MiB)
+    batch_rows              JSONL batch row bound (default 200)
+    batch_bytes             JSONL batch byte bound (default 512 KiB)
+
 Every hidden or clipped dimension is labelled and QuerybookInspect remains
 available for the full result.
 
 TRANSPORT                                                     *querybook-transport*
 
-MySQL uses the mysql client's escaped XML batch output. Values remain strings;
-SQL NULL is recorded as row._null[column] = true, while empty strings and a
-literal "NULL" remain distinguishable. SQLite keeps its tab output transport.
+The Go child speaks protocol v1 JSONL. Rows are positional arrays and columns
+are ordered metadata objects. NULL, text, and base64 binary cells remain
+lossless, including duplicate labels and exact numeric text. Sessions are
+isolated per execution. Unforced reads use driver-enforced read-only boundaries;
+use :QuerybookRun! for explicit writes.
 
  vim:tw=78:ts=8:ft=help:norl:
