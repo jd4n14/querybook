@@ -4,15 +4,17 @@ Querybook is a small SQL notebook for Neovim. SQL stays as normal, editable
 buffer text while each execution renders its result below the statement that
 produced it. Multiple statements can therefore be investigated together.
 
-The first milestone supports SQLite (useful for local tests) and MySQL through
-their command line clients. It intentionally does not build a schema browser
+The runner supports SQLite and MySQL through one on-demand Go child per Neovim
+instance. It intentionally does not build a schema browser
 or inline data editor.
 
 ## Requirements
 
-- Neovim 0.10 or newer (the plugin uses `vim.system` and virtual lines).
-- `sqlite3` for SQLite connections.
-- `mysql` for MySQL connections.
+- Neovim 0.10 or newer (the plugin uses `jobstart` and virtual lines).
+- Go 1.23+ to build the child runner (`make build`).
+
+The SQLite driver is `modernc.org/sqlite`: builds are larger and slower than a
+CGo driver, but release binaries need no system SQLite headers or compiler.
 
 ## Install
 
@@ -45,7 +47,7 @@ With `lazy.nvim`:
           user = "root",
           database = "app_development",
           -- charset = "utf8mb4", -- default for reliable Unicode values
-          -- password = "...", -- prefer MYSQL_PWD or an option file
+          -- password = "...", -- sent only to the child over stdin
         },
       },
       active_connection = "sqlite",
@@ -80,40 +82,41 @@ previous successful result until a new successful execution replaces it.
 
 SQLite accepts `path` (use `:memory:` only for one process invocation; a file
 is better for repeated notebook executions). MySQL accepts `host`, `port`,
-`socket`, `user`, `database`, and optional `password`. Querybook passes MySQL
-passwords through `MYSQL_PWD` for the child process; an option file or an
-external credential helper is preferable for shared machines.
+`socket`, `user`, `database`, and optional `password`. The password is sent
+only in the private JSON request on the child stdin and is never put in argv,
+output, or logs. Set `runner_path` for a custom installation; otherwise run
+`make build` to create `bin/querybook-runner`.
 
 ## Current boundary
 
 Inline output is bounded for readability by `max_rows`, `max_columns`,
 `max_value_length`, and `max_column_width`; each hidden or clipped dimension is
-labelled explicitly. The full result stays in memory until it is cleared or
-replaced. `QuerybookInspect` opens a vertical, navigable view with connection
+labelled explicitly. The runner retains at most `max_retained_rows` rows or
+`max_retained_bytes` bytes (defaults 10000 and 16 MiB), and labels truncation.
+`QuerybookInspect` opens a vertical, navigable view with connection
 profile and database captured at execution time. JSON shaped values are
 formatted for reading without changing their original text. In an inspect
 window, `yv` copies the exact field value, `yr` copies the exact row as ordered
 JSON (including `null`), and `yp` copies the complete payload; all three use
 the retained strings, so decimals and large integers do not round.
 
-MySQL uses the client's escaped XML batch transport. This preserves tabs,
-newlines, backslashes, Unicode, empty strings, literal `NULL`, SQL `NULL`,
-exact decimal text, and large integer text. The parser records SQL NULL as
-`row._null[column] = true` while leaving an empty string as `row[column] ==
-""`. A visual selection containing multiple statements creates an independent
-result for each statement. SQLite keeps its existing tab transport. Snapshots,
-semantic comparison, DDL lookup, and richer safety policy are planned after
-this two-query/two-result milestone.
+Rows are positional arrays and columns are ordered metadata objects, so
+duplicate labels remain lossless. Cells are null, text, or base64 binary cells;
+exact numeric spellings, empty strings, literal `NULL`, Unicode, and arbitrary
+bytes are preserved. Sessions are isolated per execution. Unforced reads use
+driver-level read-only boundaries; `:QuerybookRun!` or `allow_writes=true` is
+required for writes. A visual selection containing multiple statements creates
+an independent result for each statement. Snapshots, semantic comparison, and
+DDL lookup remain out of scope.
 
 ## Tests
 
-The focused test suite uses the installed SQLite CLI and Neovim headlessly:
+The focused test suite uses the Go runner and Neovim headlessly:
 
 ```sh
 nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/run.lua
 ```
 
-The MySQL adapter has parser fixtures and a live fixture path. To run the live
-fixture against an isolated local server, set `QUERYBOOK_MYSQL_TEST=1` plus
-`QUERYBOOK_MYSQL_SOCKET` (or host/port variables); the test only executes a
-read-only `SELECT` and never uses a real application database by default.
+`make test-integration` accepts an isolated disposable MySQL 8.4 socket through
+`QUERYBOOK_MYSQL_SOCKET` and related connection variables. It never selects an
+application database by default.

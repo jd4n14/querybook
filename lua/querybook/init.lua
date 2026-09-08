@@ -14,6 +14,12 @@ local defaults = {
   max_value_length = 128,
   max_column_width = 32,
   allow_writes = false,
+  runner_path = nil,
+  timeout_ms = 30000,
+  max_retained_rows = 10000,
+  max_retained_bytes = 16 * 1024 * 1024,
+  batch_rows = 200,
+  batch_bytes = 512 * 1024,
 }
 
 local function buffer_state(bufnr)
@@ -83,26 +89,20 @@ local function json_string(value)
   return '"' .. tostring(value):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t") .. '"'
 end
 
-local function json_value(row, column)
-  local value, is_null = render.value(row, column)
-  return is_null and "null" or json_string(value)
-end
-
 local function row_payload(result, row)
   local fields = {}
-  for _, column in ipairs(result.columns) do
-    fields[#fields + 1] = json_string(column) .. ":" .. json_value(row, column)
+  for index, column in ipairs(result.columns or {}) do
+    local value, is_null, cell = render.value(row, index)
+    fields[#fields + 1] = { column = type(column) == "table" and column.name or tostring(column), value = is_null and vim.NIL or value, encoding = (cell and cell.kind == "binary") and "base64" or "text" }
   end
-  return "{" .. table.concat(fields, ",") .. "}"
+  return vim.json.encode(fields)
 end
 
 local function full_payload(result)
   local rows = {}
   for _, row in ipairs(result.rows or {}) do rows[#rows + 1] = row_payload(result, row) end
-  return "{\"connection\":" .. json_string(result.connection_name or "connection")
-    .. ",\"database\":" .. json_string(result.database or "")
-    .. ",\"columns\":[" .. table.concat(vim.tbl_map(json_string, result.columns or {}), ",")
-    .. "],\"rows\":[" .. table.concat(rows, ",") .. "]}"
+  local columns = {}; for _, column in ipairs(result.columns or {}) do columns[#columns + 1] = type(column) == "table" and column or { name = tostring(column) } end
+  return vim.json.encode({ connection = result.connection_name or "connection", database = result.database or "", columns = columns, rows = vim.tbl_map(vim.json.decode, rows), truncated = result.truncated or false, truncation_reason = result.truncation_reason })
 end
 
 local function pretty_json(value)
@@ -146,11 +146,11 @@ local function inspect_content(result)
     content[#content + 1] = line
     locations[#content] = location
   end
-  add("-- " .. result.status .. " · " .. result.query)
+  for _, query_line in ipairs(vim.split("-- " .. result.status .. " · " .. result.query, "\n", { plain = true })) do add(query_line) end
   add("connection: " .. tostring(result.connection_name or "connection"))
   add("driver: " .. tostring(result.connection_driver or "unknown"))
   add("database: " .. tostring(result.database or "(none)"))
-  add("rows: " .. tostring(#(result.rows or {})) .. " · columns: " .. tostring(#(result.columns or {})))
+  add("rows: " .. tostring(#(result.rows or {})) .. " · columns: " .. tostring(#(result.columns or {})) .. (result.truncated and " · truncated" or ""))
   if result.status == "error" then
     add(result.error or "query failed")
     return content, locations
@@ -158,18 +158,20 @@ local function inspect_content(result)
   for row_index, row in ipairs(result.rows or {}) do
     add("", nil)
     add("row " .. row_index, { kind = "row", row = row_index })
-    for _, column in ipairs(result.columns or {}) do
-      local value, is_null = render.value(row, column)
+    for column_index, column in ipairs(result.columns or {}) do
+      local value, is_null, cell = render.value(row, column_index)
       local text = is_null and "NULL" or tostring(value)
+      local column_name = type(column) == "table" and column.name or tostring(column)
+      if cell and cell.kind == "binary" then text = "base64:" .. text end
       local is_json = not is_null and text:match("^%s*[%[{].*[%]}]%s*$")
       if is_json then
-        add("  " .. column .. " (JSON):", { kind = "field", row = row_index, column = column })
+        add("  " .. column_name .. " (JSON):", { kind = "field", row = row_index, column = column_index })
         local pretty = pretty_json(text)
-        for _, line in ipairs(pretty) do add("    " .. line, { kind = "field", row = row_index, column = column }) end
+        for _, line in ipairs(pretty) do add("    " .. line, { kind = "field", row = row_index, column = column_index }) end
       else
         local value_lines = vim.split(text, "\n", { plain = true })
-        add("  " .. column .. ": " .. (value_lines[1] or ""), { kind = "field", row = row_index, column = column })
-        for line_index = 2, #value_lines do add("    " .. value_lines[line_index], { kind = "field", row = row_index, column = column }) end
+        add("  " .. column_name .. ": " .. (value_lines[1] or ""), { kind = "field", row = row_index, column = column_index })
+        for line_index = 2, #value_lines do add("    " .. value_lines[line_index], { kind = "field", row = row_index, column = column_index }) end
       end
     end
   end
@@ -208,25 +210,28 @@ function M.run(opts)
       return vim.notify("Querybook blocked: " .. table.concat(analysis.reasons, "; ") .. " (use :QuerybookRun! or allow_writes)", vim.log.levels.WARN)
     end
   end
+  runner.setup(M.config)
   local conn, name = connection()
   if not conn then return vim.notify("Querybook: unknown connection " .. tostring(M.config.active_connection), vim.log.levels.ERROR) end
   local bs = buffer_state(bufnr)
   local function execute_one(item)
     local old = find_current_result(bufnr, { start_line = item.anchor, end_line = item.anchor })
+    if old and old.handle then old.cancelled = true; old.handle.cancel() end
     bs.next_id = bs.next_id + 1
     local result = {
-      id = bs.next_id, query = item.query, status = "running", rows = {}, columns = {},
+      id = bs.next_id, query = item.query, status = "running", rows = {}, columns = {}, generation = (old and (old.generation or 0) + 1 or 1),
       connection_name = name, connection_profile = name, connection_driver = conn.driver,
       database = conn.database or conn.path, duration_ms = 0,
     }
     result.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, item.anchor - 1, 0, { right_gravity = false, virt_lines = render.lines(result, M.config), virt_lines_above = false, virt_lines_leftcol = true })
     bs.results[result.id] = result
     local started = vim.loop.hrtime()
-    runner.run(conn, item.query, function(data, err)
+    result.handle = runner.run(conn, item.query, { force = (opts and opts.force) or M.config.allow_writes, generation = result.generation }, function(data, err)
+      if result.cancelled or bs.results[result.id] ~= result then return end
       result.duration_ms = math.floor((vim.loop.hrtime() - started) / 1000000)
       if err then result.status, result.error = "error", err
       else
-        result.status, result.rows, result.columns = "success", data.rows, data.columns
+        result.status, result.rows, result.columns = "success", data.rows or {}, data.columns or {}
         -- A successful refresh replaces the previous execution. On failure the
         -- old result remains visible beside the new error, preserving context.
         if old and bs.results[old.id] then remove_result(bufnr, old) end
@@ -254,7 +259,7 @@ function M.inspect()
   vim.keymap.set("n", "yv", function()
     local location = current_location()
     if not location or location.kind ~= "field" then return vim.notify("Querybook: place cursor on a field", vim.log.levels.WARN) end
-    copy_register(render.value(best.rows[location.row], location.column) == nil and "NULL" or render.value_text(best.rows[location.row], location.column))
+    copy_register(render.value_text(best.rows[location.row], location.column))
   end, { buffer = buf, silent = true, desc = "Copy exact Querybook field" })
   vim.keymap.set("n", "yr", function()
     local location = current_location()
@@ -285,15 +290,16 @@ end
 function M.clear(all)
   local bufnr = vim.api.nvim_get_current_buf()
   local bs = buffer_state(bufnr)
-  if all then for _, result in pairs(bs.results) do remove_result(bufnr, result) end
+  if all then for _, result in pairs(bs.results) do if result.handle then result.handle.cancel() end; remove_result(bufnr, result) end
   else
     local current = parser.statement_at(parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)), vim.api.nvim_win_get_cursor(0)[1])
-    if current then local result = find_current_result(bufnr, current); if result then remove_result(bufnr, result) end end
+    if current then local result = find_current_result(bufnr, current); if result then if result.handle then result.handle.cancel() end; remove_result(bufnr, result) end end
   end
 end
 
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", defaults, opts or {})
+  runner.setup(M.config)
   render.setup_highlights()
   if not M._commands_created then
     vim.api.nvim_create_user_command("QuerybookRun", function(command_opts) M.run({ range = command_opts.range, line1 = command_opts.line1, line2 = command_opts.line2, force = command_opts.bang }) end, { range = true, bang = true, desc = "Run SQL under cursor or visual selection" })
@@ -305,6 +311,10 @@ function M.setup(opts)
   end
   local group = vim.api.nvim_create_augroup("Querybook", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufEnter" }, { group = group, callback = function(args) if state[args.buf] then refresh_stale(args.buf) end end })
+  vim.api.nvim_create_autocmd("BufDelete", { group = group, callback = function(args)
+    local bs = state[args.buf]
+    if bs then for _, result in pairs(bs.results) do if result.handle then result.handle.cancel() end end; state[args.buf] = nil end
+  end })
 end
 
 return M
