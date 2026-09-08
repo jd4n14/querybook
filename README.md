@@ -44,6 +44,7 @@ With `lazy.nvim`:
           port = 3306,
           user = "root",
           database = "app_development",
+          -- charset = "utf8mb4", -- default for reliable Unicode values
           -- password = "...", -- prefer MYSQL_PWD or an option file
         },
       },
@@ -63,10 +64,12 @@ following commands are available:
 :QuerybookRefresh   " re-run the result under the cursor
 :QuerybookClear     " clear the current result
 :QuerybookClear!    " clear all results in the buffer
+:QuerybookToggle    " collapse or expand only the result under the cursor
 ```
 
-Select lines in visual mode before `:QuerybookRun` to execute that selection as
-one statement. A result is marked stale as soon as its statement text changes.
+Select lines in visual mode before `:QuerybookRun` to execute that selection;
+multiple statements receive independent result anchors. A result is marked
+stale as soon as its statement text changes.
 An execution error is rendered below the statement and does not delete the
 previous successful result until a new successful execution replaces it.
 
@@ -83,15 +86,24 @@ external credential helper is preferable for shared machines.
 
 ## Current boundary
 
-Results are intentionally capped by `max_rows` and `max_column_width` for a
-readable notebook. `QuerybookInspect` shows the full values of the selected
-result in a normal scratch buffer that you can navigate and copy. The inline
-table is virtual display content, so it is not directly cursor-addressable or
-selectable as SQL buffer lines. The CLI tabular transport is intentionally
-small: values containing literal tabs or newlines are not losslessly decoded
-by this milestone, so format such payloads as JSON text in SQL when exact
-inspection matters. Snapshots, semantic comparison, DDL lookup, and richer
-safety policy are planned after this two-query/two-result milestone.
+Inline output is bounded for readability by `max_rows`, `max_columns`,
+`max_value_length`, and `max_column_width`; each hidden or clipped dimension is
+labelled explicitly. The full result stays in memory until it is cleared or
+replaced. `QuerybookInspect` opens a vertical, navigable view with connection
+profile and database captured at execution time. JSON shaped values are
+formatted for reading without changing their original text. In an inspect
+window, `yv` copies the exact field value, `yr` copies the exact row as ordered
+JSON (including `null`), and `yp` copies the complete payload; all three use
+the retained strings, so decimals and large integers do not round.
+
+MySQL uses the client's escaped XML batch transport. This preserves tabs,
+newlines, backslashes, Unicode, empty strings, literal `NULL`, SQL `NULL`,
+exact decimal text, and large integer text. The parser records SQL NULL as
+`row._null[column] = true` while leaving an empty string as `row[column] ==
+""`. A visual selection containing multiple statements creates an independent
+result for each statement. SQLite keeps its existing tab transport. Snapshots,
+semantic comparison, DDL lookup, and richer safety policy are planned after
+this two-query/two-result milestone.
 
 ## Tests
 
@@ -101,5 +113,7 @@ The focused test suite uses the installed SQLite CLI and Neovim headlessly:
 nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/run.lua
 ```
 
-The MySQL adapter is covered at command construction level; a live MySQL test
-can be run by setting `QUERYBOOK_MYSQL_TEST=1` and providing a local server.
+The MySQL adapter has parser fixtures and a live fixture path. To run the live
+fixture against an isolated local server, set `QUERYBOOK_MYSQL_TEST=1` plus
+`QUERYBOOK_MYSQL_SOCKET` (or host/port variables); the test only executes a
+read-only `SELECT` and never uses a real application database by default.
