@@ -44,3 +44,16 @@ func TestConnectionProtocolRejectsInlineSecretsAndRequiresIDForExecute(t *testin
 		t.Fatal("update without connection_id accepted")
 	}
 }
+
+func TestResultProtocolRequiresOpaqueHandleAndKnownOperation(t *testing.T) {
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"result","request_id":"r","op":"page"}`)); err == nil {
+		t.Fatal("result request without handle accepted")
+	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"result","request_id":"r","op":"unknown","result_handle":"h"}`)); err == nil {
+		t.Fatal("unknown result operation accepted")
+	}
+	got, err := DecodeLine([]byte(`{"version":1,"type":"result","request_id":"r","op":"page","result_handle":"h","offset":3,"limit":10}`))
+	if err != nil || got.Handle != "h" || got.Offset != 3 || got.Limit != 10 {
+		t.Fatalf("result request=%#v err=%v", got, err)
+	}
+}

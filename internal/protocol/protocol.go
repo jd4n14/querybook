@@ -35,6 +35,28 @@ type Request struct {
 	MaxRetainedBytes int64      `json:"max_retained_bytes,omitempty"`
 	BatchRows        int        `json:"batch_rows,omitempty"`
 	BatchBytes       int64      `json:"batch_bytes,omitempty"`
+	Handle           string     `json:"result_handle,omitempty"`
+	Offset           int        `json:"offset,omitempty"`
+	Limit            int        `json:"limit,omitempty"`
+	Row              int        `json:"row,omitempty"`
+	Column           int        `json:"column,omitempty"`
+	ColumnName       string     `json:"column_name,omitempty"`
+	SourceRows       []int      `json:"source_rows,omitempty"`
+	Filter           string     `json:"filter,omitempty"`
+	ViewID           string     `json:"view_id,omitempty"`
+	SourceRow        int        `json:"source_row,omitempty"`
+	CurrentRow       int        `json:"current_row,omitempty"`
+	Page             int        `json:"page,omitempty"`
+	PageSize         int        `json:"page_size,omitempty"`
+	MatchIndex       int        `json:"match_index,omitempty"`
+	SourceIndex      int        `json:"source_index,omitempty"`
+	Expression       string     `json:"expression,omitempty"`
+	LeftSourceIndex  int        `json:"left_source_index,omitempty"`
+	RightSourceIndex int        `json:"right_source_index,omitempty"`
+	Scope            string     `json:"scope,omitempty"`
+	Format           string     `json:"format,omitempty"`
+	Path             string     `json:"path,omitempty"`
+	ExportID         string     `json:"export_id,omitempty"`
 }
 
 type Connection struct {
@@ -63,6 +85,25 @@ type Cell struct {
 	Base64 string `json:"base64,omitempty"`
 }
 
+// ResultMetadata is returned with retained-set lifecycle responses. Column
+// metadata is limited to the database/sql facts available at execution time.
+type ResultMetadata struct {
+	Columns          []Column    `json:"columns,omitempty"`
+	OriginalSQL      string      `json:"original_sql,omitempty"`
+	ExecutedSQL      string      `json:"executed_sql,omitempty"`
+	AutoLimitApplied bool        `json:"auto_limit_applied,omitempty"`
+	AutoLimitReason  string      `json:"auto_limit_reason,omitempty"`
+	ConnectionID     string      `json:"connection_id,omitempty"`
+	Connection       *Connection `json:"connection,omitempty"`
+	ExecutedAt       string      `json:"executed_at,omitempty"`
+	ResultSets       int         `json:"result_sets,omitempty"`
+	ObservedRows     int64       `json:"observed_rows,omitempty"`
+	RetainedBytes    int64       `json:"retained_bytes,omitempty"`
+	Truncated        bool        `json:"truncated,omitempty"`
+	TruncationReason string      `json:"truncation_reason,omitempty"`
+	AffectedRows     int64       `json:"affected_rows,omitempty"`
+}
+
 func NullCell() Cell         { return Cell{Kind: "null"} }
 func TextCell(v string) Cell { return Cell{Kind: "text", Text: v} }
 func BinaryCell(v []byte) Cell {
@@ -70,32 +111,56 @@ func BinaryCell(v []byte) Cell {
 }
 
 type Event struct {
-	Version            int          `json:"version"`
-	Type               string       `json:"type"`
-	RequestID          string       `json:"request_id,omitempty"`
-	ExecutionID        string       `json:"execution_id,omitempty"`
-	Generation         int64        `json:"generation,omitempty"`
-	RunnerVersion      string       `json:"runner_version,omitempty"`
-	ResultSet          int          `json:"result_set,omitempty"`
-	Columns            []Column     `json:"columns,omitempty"`
-	Rows               [][]Cell     `json:"rows,omitempty"`
-	DurationMS         int64        `json:"duration_ms,omitempty"`
-	ResultSets         int          `json:"result_sets,omitempty"`
-	RowCount           int64        `json:"row_count,omitempty"`
-	ObservedRows       int64        `json:"observed_rows,omitempty"`
-	AffectedRows       int64        `json:"affected_rows,omitempty"`
-	Truncated          bool         `json:"truncated,omitempty"`
-	TruncationReason   string       `json:"truncation_reason,omitempty"`
-	AutoLimitApplied   bool         `json:"auto_limit_applied,omitempty"`
-	AutoLimitReason    string       `json:"auto_limit_reason,omitempty"`
-	RetainedBytes      int64        `json:"retained_bytes,omitempty"`
-	Code               string       `json:"code,omitempty"`
-	Message            string       `json:"message,omitempty"`
-	Op                 string       `json:"op,omitempty"`
-	Connection         *Connection  `json:"connection,omitempty"`
-	Connections        []Connection `json:"connections,omitempty"`
-	ActiveConnectionID string       `json:"active_connection_id,omitempty"`
-	Terminal           bool         `json:"terminal,omitempty"`
+	Version            int                `json:"version"`
+	Type               string             `json:"type"`
+	RequestID          string             `json:"request_id,omitempty"`
+	ExecutionID        string             `json:"execution_id,omitempty"`
+	Generation         int64              `json:"generation,omitempty"`
+	RunnerVersion      string             `json:"runner_version,omitempty"`
+	ResultSet          int                `json:"result_set,omitempty"`
+	Columns            []Column           `json:"columns,omitempty"`
+	Rows               [][]Cell           `json:"rows,omitempty"`
+	DurationMS         int64              `json:"duration_ms,omitempty"`
+	ResultSets         int                `json:"result_sets,omitempty"`
+	RowCount           int64              `json:"row_count,omitempty"`
+	ObservedRows       int64              `json:"observed_rows,omitempty"`
+	AffectedRows       int64              `json:"affected_rows,omitempty"`
+	Truncated          bool               `json:"truncated,omitempty"`
+	TruncationReason   string             `json:"truncation_reason,omitempty"`
+	AutoLimitApplied   bool               `json:"auto_limit_applied,omitempty"`
+	AutoLimitReason    string             `json:"auto_limit_reason,omitempty"`
+	RetainedBytes      int64              `json:"retained_bytes,omitempty"`
+	Code               string             `json:"code,omitempty"`
+	Message            string             `json:"message,omitempty"`
+	Op                 string             `json:"op,omitempty"`
+	Connection         *Connection        `json:"connection,omitempty"`
+	Connections        []Connection       `json:"connections,omitempty"`
+	ActiveConnectionID string             `json:"active_connection_id,omitempty"`
+	Terminal           bool               `json:"terminal,omitempty"`
+	Handle             string             `json:"result_handle,omitempty"`
+	Offset             int                `json:"offset,omitempty"`
+	TotalRows          int64              `json:"total_rows,omitempty"`
+	SourceRows         []int              `json:"source_rows,omitempty"`
+	ViewID             string             `json:"view_id,omitempty"`
+	SourceRow          int                `json:"source_row,omitempty"`
+	CurrentRow         int                `json:"current_row,omitempty"`
+	Cell               *Cell              `json:"cell,omitempty"`
+	Column             *Column            `json:"column,omitempty"`
+	Metadata           *ResultMetadata    `json:"metadata,omitempty"`
+	Pinned             bool               `json:"pinned,omitempty"`
+	Changes            []ResultDifference `json:"changes,omitempty"`
+	SourceIndices      []int              `json:"source_indices,omitempty"`
+	MatchingIndices    []int              `json:"matching_indices,omitempty"`
+	Valid              bool               `json:"valid,omitempty"`
+}
+
+type ResultDifference struct {
+	Column     int    `json:"column"`
+	ColumnName string `json:"column_name,omitempty"`
+	Path       string `json:"path"`
+	Kind       string `json:"kind"`
+	Before     *Cell  `json:"before,omitempty"`
+	After      *Cell  `json:"after,omitempty"`
 }
 
 func (r Request) Validate() error {
@@ -147,6 +212,31 @@ func (r Request) Validate() error {
 	}
 	if r.Type == "cancel" && r.ExecutionID == "" {
 		return errors.New("missing execution_id")
+	}
+	if r.Type == "result" {
+		if r.RequestID == "" {
+			return errors.New("missing request_id")
+		}
+		switch r.Op {
+		case "page", "view", "cell", "filter", "filter_clear", "compare", "release", "pin", "unpin", "payload", "export", "export_cancel":
+		default:
+			return errors.New("unknown result operation")
+		}
+		if r.Handle == "" {
+			return errors.New("missing result handle")
+		}
+		if (r.Op == "page" || r.Op == "view") && (r.Offset < 0 || r.Limit < 0 || r.Page < 0 || r.PageSize < 0) {
+			return errors.New("invalid result page")
+		}
+		if r.Op == "cell" && (r.Row < 0 || r.Column < 0) {
+			return errors.New("invalid result cell")
+		}
+		if r.Op == "filter" && r.Filter == "" && r.Expression == "" {
+			return errors.New("missing result filter")
+		}
+		if r.Op == "compare" && (r.SourceRow < 0 || r.CurrentRow < 0) {
+			return errors.New("invalid result comparison rows")
+		}
 	}
 	return nil
 }

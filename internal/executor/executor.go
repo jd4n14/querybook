@@ -48,8 +48,14 @@ func limits(r protocol.Request) Limits {
 }
 
 type Result struct {
-	Columns       []protocol.Column
-	Rows          [][]protocol.Cell
+	Columns []protocol.Column
+	Rows    [][]protocol.Cell
+	// ExecutedSQL preserves the exact SQL sent to the driver, including an
+	// automatic top-level LIMIT when one was applied. Connection is the
+	// execution-time metadata snapshot with no credential material.
+	ExecutedSQL   string
+	Connection    protocol.Connection
+	ConnectionID  string
 	Observed      int64
 	RetainedBytes int64
 	Truncated     bool
@@ -199,6 +205,10 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 	if err != nil {
 		return Result{}, err
 	}
+	// Keep the resolved metadata in the result so the runner can publish an
+	// execution-time snapshot even if a connection is edited or deleted before
+	// the asynchronous execution goroutine emits result_end.
+	resultConnection := c
 	if c.Driver == "sqlite" && !req.Force {
 		if err := connections.CheckSQLitePath(c.Path); err != nil {
 			return Result{}, err
@@ -251,7 +261,7 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 		if err := emit(protocol.Event{Version: 1, Type: "result_start", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, ResultSet: 0, Columns: []protocol.Column{}}); err != nil {
 			return Result{}, err
 		}
-		return Result{ResultSets: 1, Affected: affected}, nil
+		return Result{ResultSets: 1, Affected: affected, ExecutedSQL: req.SQL, Connection: resultConnection, ConnectionID: req.ConnectionID}, nil
 	}
 	executedSQL, autoLimit := addAutoLimit(req.SQL)
 	if tx != nil {
@@ -264,7 +274,7 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 	}
 	defer rows.Close()
 	l := limits(req)
-	out := Result{}
+	out := Result{ExecutedSQL: executedSQL, Connection: resultConnection, ConnectionID: req.ConnectionID}
 	out.AutoLimit = autoLimit
 	if autoLimit {
 		out.AutoLimitWhy = "top-level SELECT had no explicit LIMIT"
