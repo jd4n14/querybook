@@ -26,11 +26,34 @@ COMMANDS                                                        *querybook-comma
     Collapse or expand only the result attached to the statement under the
     cursor. Inspection remains available while a result is collapsed.
 
+:QuerybookNextPage                                         *:QuerybookNextPage*
+    Show the next page of retained rows for the result under the cursor.
+
+:QuerybookPrevPage                                         *:QuerybookPrevPage*
+    Show the previous page of retained rows for the result under the cursor.
+
+:QuerybookNextColumn                                     *:QuerybookNextColumn*
+    Show the next page of retained columns for the result under the cursor.
+
+:QuerybookPrevColumn                                     *:QuerybookPrevColumn*
+    Show the previous page of retained columns for the result under the cursor.
+
 :QuerybookClear                                                   *:QuerybookClear*
     Clear the result attached to the statement under the cursor.
 
 :QuerybookClear!                                                  *:QuerybookClear!*
     Clear every result in the current SQL buffer.
+
+:QuerybookConnections                                      *:QuerybookConnections*
+    Open the native connection manager. The qC normal-mode mapping opens the
+    same list; qc remains the clear mapping. Enter selects a connection, a adds
+    one, e edits metadata, p changes its password, d deletes after confirmation,
+    t tests a saved connection, and q closes the list.
+
+:QuerybookConnectionsImport                           *:QuerybookConnectionsImport*
+    Explicitly copy the metadata allowlist from a named legacy config profile
+    into the connection form. Password fields are ignored; save prompts for a
+    new password when the selected driver is MySQL.
 
 INSPECTOR                                                     *querybook-inspector*
 
@@ -50,20 +73,25 @@ and large integers are not rounded or clipped.
 
 CONFIGURATION                                                  *querybook-config*
 
-Each connection has driver = "sqlite" or driver = "mysql". MySQL accepts
-host, port, socket, user, database, password, and charset (utf8mb4 is the
-default). Passwords are sent only through child stdin. Results capture the
-selected connection profile and database when they execute; changing the
-active connection does not rewrite existing result metadata.
+Connections are managed by the Go runner and selected by a persisted UUID.
+The native metadata form accepts name, driver, host, port, database, username,
+socket, path, and charset. SQLite requires path. Passwords are captured only
+for create and password-change actions through a hidden prompt and are sent
+immediately over the private stdin request; they are never displayed or kept
+in Lua state. Results capture the selected connection profile and database
+when they execute; changing the active connection does not rewrite existing
+result metadata.
 
 The inline display reads these limits, while retaining the complete result:
 
-    max_rows               Maximum visible rows (default 50)
-    max_columns            Maximum visible columns (default 12)
+    preview_rows           Rows per inline viewport page (default 10)
+    max_rows               Legacy alias for preview_rows when preview_rows is absent
+    max_columns            Columns per inline viewport page (default 12)
     max_value_length       Maximum displayed value characters (default 128)
     max_column_width       Maximum table cell width (default 32)
 
     runner_path             Optional installed querybook-runner executable
+    connection_store_path   Optional managed metadata SQLite path
     timeout_ms              Query timeout (default 30000)
     max_retained_rows       Runner retention bound (default 10000)
     max_retained_bytes      Runner retention bytes (default 16 MiB)
@@ -71,7 +99,10 @@ The inline display reads these limits, while retaining the complete result:
     batch_bytes             JSONL batch byte bound (default 512 KiB)
 
 Every hidden or clipped dimension is labelled and QuerybookInspect remains
-available for the full result.
+available for the full result. Top-level SELECT statements without an outer
+LIMIT receive a Go-runner `LIMIT 500`; explicit outer limits and nested or
+commented LIMIT text are preserved. The inline header reports this automatic
+limit separately from the visible row page and retention status.
 
 TRANSPORT                                                     *querybook-transport*
 

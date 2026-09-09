@@ -127,7 +127,10 @@ func Classify(sql string) Decision {
 	if len(t) == 0 {
 		return Decision{Reason: "empty statement"}
 	}
-	k := t[0]
+	k := statementKeyword(sql)
+	if k == "" {
+		k = t[0]
+	}
 	d := Decision{Keyword: k}
 	lowerSQL := strings.ToLower(sql)
 	if strings.Contains(lowerSQL, ":=") || strings.Contains(lowerSQL, "load_file(") {
@@ -154,6 +157,100 @@ func Classify(sql string) Decision {
 		d.Reason = strings.ToUpper(k) + " is not an unforced read"
 	}
 	return d
+}
+
+// statementKeyword finds the outer statement after a WITH clause. Tokens()
+// intentionally omits punctuation, so this small scanner keeps parentheses
+// only for this one policy decision.
+func statementKeyword(sql string) string {
+	depth := 0
+	withSeen := false
+	for i := 0; i < len(sql); {
+		c := sql[i]
+		if unicode.IsSpace(rune(c)) {
+			i++
+			continue
+		}
+		if c == '\'' || c == '"' || c == '`' {
+			q := c
+			i++
+			for i < len(sql) {
+				if sql[i] == '\\' && q != '`' {
+					i += 2
+					continue
+				}
+				if sql[i] == q {
+					if i+1 < len(sql) && sql[i+1] == q {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		if c == '-' && i+1 < len(sql) && sql[i+1] == '-' && (i+2 >= len(sql) || unicode.IsSpace(rune(sql[i+2]))) {
+			i += 2
+			for i < len(sql) && sql[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if c == '#' {
+			i++
+			for i < len(sql) && sql[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if c == '/' && i+1 < len(sql) && sql[i+1] == '*' {
+			i += 2
+			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(sql) {
+				i += 2
+			}
+			continue
+		}
+		if c == '(' {
+			depth++
+			i++
+			continue
+		}
+		if c == ')' {
+			if depth > 0 {
+				depth--
+			}
+			i++
+			continue
+		}
+		if unicode.IsLetter(rune(c)) {
+			start := i
+			for i < len(sql) && (unicode.IsLetter(rune(sql[i])) || unicode.IsDigit(rune(sql[i])) || sql[i] == '_' || sql[i] == '$') {
+				i++
+			}
+			word := strings.ToLower(sql[start:i])
+			if depth != 0 {
+				continue
+			}
+			if !withSeen {
+				if word == "with" {
+					withSeen = true
+					continue
+				}
+				return word
+			}
+			if word == "select" || word == "insert" || word == "update" || word == "delete" || word == "replace" || word == "merge" || word == "values" {
+				return word
+			}
+			continue
+		}
+		i++
+	}
+	return ""
 }
 
 func Allow(sql string, force bool) Decision {

@@ -23,3 +23,24 @@ func TestJSONLAndCells(t *testing.T) {
 		t.Fatalf("version: %v", err)
 	}
 }
+
+func TestConnectionProtocolRejectsInlineSecretsAndRequiresIDForExecute(t *testing.T) {
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"execute","request_id":"r","execution_id":"e","connection":{"driver":"mysql","password":"sentinel"},"sql":"SELECT 1"}`)); err == nil {
+		t.Fatal("nested execute credential accepted")
+	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"execute","request_id":"r","execution_id":"e","connection_id":"id","password":"sentinel","sql":"SELECT 1"}`)); err == nil {
+		t.Fatal("inline execute credential accepted")
+	}
+	empty := ""
+	raw := `{"version":1,"type":"connection","request_id":"r","op":"create","connection":{"name":"n","driver":"mysql"},"password":""}`
+	got, err := DecodeLine([]byte(raw))
+	if err != nil || got.Password == nil || *got.Password != empty {
+		t.Fatalf("empty password presence lost: %#v err=%v", got, err)
+	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"update","connection":{"id":"id","name":"n","driver":"mysql"},"password":"sentinel"}`)); err == nil {
+		t.Fatal("update credential accepted")
+	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"update","connection":{"name":"n","driver":"mysql"}}`)); err == nil {
+		t.Fatal("update without connection_id accepted")
+	}
+}
