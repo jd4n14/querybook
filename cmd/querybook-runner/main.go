@@ -88,7 +88,14 @@ func (r *runner) connection(req protocol.Request) {
 		c, event.ActiveConnectionID, err = store.Select(req.ConnectionID)
 		event.Connection = &c
 	case "test":
-		err = executor.TestConnection(context.Background(), store.Resolve, req.ConnectionID)
+		testCtx := context.Background()
+		timeout := 10 * time.Second
+		if req.TimeoutMS > 0 {
+			timeout = time.Duration(req.TimeoutMS) * time.Millisecond
+		}
+		ctx, cancel := context.WithTimeout(testCtx, timeout)
+		err = executor.TestConnection(ctx, store.Resolve, req.ConnectionID)
+		cancel()
 	}
 	if err != nil {
 		code, msg := "internal", "connection operation failed"

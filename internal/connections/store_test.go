@@ -126,6 +126,43 @@ func TestCRUDPersistenceSelectionAndNoSecretSQLite(t *testing.T) {
 	}
 }
 
+func TestMetadataPermissionsArePrivateAndPermissionErrorsFailClosed(t *testing.T) {
+	s, _, path := openTest(t)
+	defer s.Close()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("database mode=%o", info.Mode().Perm())
+	}
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirInfo.Mode().Perm() != 0700 {
+		t.Fatalf("directory mode=%o", dirInfo.Mode().Perm())
+	}
+	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
+		if err := os.WriteFile(sidecar, []byte("sidecar"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := securePermissions(path); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(sidecar)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("sidecar %s mode=%o", sidecar, info.Mode().Perm())
+		}
+	}
+	if err := securePermissions(filepath.Join(filepath.Dir(path), "missing", "metadata.sqlite")); err == nil {
+		t.Fatal("permission failure was ignored")
+	}
+}
+
 func TestPasswordlessCRUDWorksWithUnavailableNativeCredentialStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "connections.sqlite")
 	s, err := Open(path, nil)

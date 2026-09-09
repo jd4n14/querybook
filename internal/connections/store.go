@@ -72,12 +72,26 @@ func Open(path string, creds *credentials.Store) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if path != ":memory:" {
-		_ = os.Chmod(path, 0600)
-		_ = os.Chmod(path+"-wal", 0600)
-		_ = os.Chmod(path+"-shm", 0600)
+	if err := securePermissions(path); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("metadata store unavailable")
 	}
 	return s, nil
+}
+
+func securePermissions(path string) error {
+	if path == ":memory:" {
+		return nil
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return err
+	}
+	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Chmod(sidecar, 0600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) Path() string { return s.path }

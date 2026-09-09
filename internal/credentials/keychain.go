@@ -12,7 +12,7 @@ var ErrNotFound = errors.New("credential not found")
 var ErrAlreadyExists = errors.New("credential already exists")
 var ErrUnavailable = errors.New("credential store unavailable")
 
-const Service = "Querybook"
+const Service = "com.jd4n14.querybook.connections"
 
 // Backend is the small operation surface used by Store and its tests. The
 // keychain implementation is deliberately injectable so metadata tests never
