@@ -33,6 +33,11 @@ local response, failure
 runner.result("cell", { result_handle = view.handle, row = 0, column = 3 }, function(data, err) response, failure = data, err end)
 assert(vim.wait(5000, function() return response ~= nil or failure ~= nil end), "real cell response")
 assert(not failure and response.cell and response.cell.kind == "binary" and response.cell.base64 == "AP8=", "binary cell remains exact base64")
+for line, location in pairs(view.locations or {}) do
+  if location.kind == "field" and location.column == 4 then vim.api.nvim_win_set_cursor(view.win, { line, 0 }); break end
+end
+vim.api.nvim_feedkeys(vim.keycode("yv"), "x", false)
+assert(vim.wait(1000, function() return vim.fn.getreg('"') == "base64:AP8=" end), "binary inspect copy preserves typed cell")
 local pages
 runner.result("view", { result_handle = view.handle, offset = 0, limit = 1 }, function(data, err) pages, failure = data, err end)
 assert(vim.wait(5000, function() return pages ~= nil or failure ~= nil end), "real page response")

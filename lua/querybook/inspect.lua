@@ -32,78 +32,14 @@ local function type_label(column)
   return tostring(typ)
 end
 
--- A tiny JSON reader keeps numbers as source text.  vim.json.decode turns
--- large integers into Lua numbers, which would corrupt copy and display.
-local function parse_json(text)
-  local i = 1
-  local function ws() while text:sub(i, i):match("%s") do i = i + 1 end end
-  local parse_value
-  local function string_value()
-    local start = i; i = i + 1
-    local escaped = false
-    while i <= #text do
-      local c = text:sub(i, i)
-      if escaped then escaped = false
-      elseif c == "\\" then escaped = true
-      elseif c == '"' then i = i + 1; return { kind = "string", raw = text:sub(start, i - 1) } end
-      i = i + 1
-    end
-    return nil
-  end
-  local function composite(open, close, kind)
-    local node = { kind = kind, raw = nil, children = {} }
-    i = i + 1; ws()
-    if text:sub(i, i) == close then i = i + 1; node.raw = open .. close; return node end
-    while i <= #text do
-      local key
-      if kind == "object" then
-        if text:sub(i, i) ~= '"' then return nil end
-        key = string_value(); if not key then return nil end; ws()
-        if text:sub(i, i) ~= ":" then return nil end
-        i = i + 1; ws()
-      end
-      local child = parse_value(); if not child then return nil end
-      node.children[#node.children + 1] = { key = key, node = child }
-      ws()
-      local c = text:sub(i, i)
-      if c == close then i = i + 1; break end
-      if c ~= "," then return nil end
-      i = i + 1; ws()
-    end
-    node.raw = text:sub(node._start or 1, i - 1)
-    return node
-  end
-  function parse_value()
-    ws(); local start = i; local c = text:sub(i, i)
-    if c == '"' then local n = string_value(); if n then n.raw = text:sub(start, i - 1) end; return n end
-    if c == "{" then local n = composite("{", "}", "object"); if n then n.raw = text:sub(start, i - 1) end; return n end
-    if c == "[" then local n = composite("[", "]", "array"); if n then n.raw = text:sub(start, i - 1) end; return n end
-    for _, literal in ipairs({ "true", "false", "null" }) do
-      if text:sub(i, i + #literal - 1) == literal then i = i + #literal; return { kind = literal, raw = literal } end
-    end
-    local number = text:sub(i):match("^-?(0|[1-9]%d*)(%.%d+)?([eE][+-]?%d+)?")
-    if number then i = i + #number; return { kind = "number", raw = number } end
-    return nil
-  end
-  local root = parse_value(); ws()
-  if not root or i <= #text then return nil end
-  return root
-end
-
 local function json_node_for(state, row, column, source_index)
   local c = state.columns[column]
   if type_label(c) ~= "structured" then return nil end
   local key = tostring(source_index) .. ":" .. tostring(column)
-  -- A handle-backed view receives an exact presentation tree from Go.  Lua's
-  -- JSON decoder is deliberately never used for those results because it can
-  -- round large numeric tokens.  The local reader is only a test/legacy
-  -- fallback for results without a registry handle.
+  -- The result registry must provide an exact tree. Lua never parses JSON
+  -- values, since doing so could round a large numeric token.
   if state.trees[key] then return state.trees[key] end
-  if state.handle and state.runner and state.runner.result then return nil end
-  local value, is_null = render.value(row, column)
-  if is_null then return nil end
-  if state.json[key] == nil then state.json[key] = parse_json(tostring(value)) or false end
-  return state.json[key] or nil
+  return nil
 end
 
 local function format_meta(result, state)
@@ -316,12 +252,13 @@ function M.open(result, opts)
   local rows = result.rows or {}
   local state = {
     result = result, runner = opts.runner, handle = result.result_handle or result.handle_id,
-    generation = result.generation, columns = columns, rows = rows, by_source = {}, json = {}, trees = {}, expanded = {}, raw = {},
+    generation = result.generation, columns = columns, rows = rows, by_source = {}, trees = {}, expanded = {}, raw = {},
     page_size = opts.page_size or 10, page = 1, matching_count = #rows, retained_count = tonumber(result.row_count) or #rows,
     indices = {}, all_indices = {}, current_match = #rows > 0 and 1 or 0, current_source = #rows > 0 and 0 or nil,
   }
   for i, row in ipairs(rows) do local source = i - 1; state.by_source[source], state.indices[i], state.all_indices[i] = row, source, source end
   local buf = vim.api.nvim_create_buf(false, true); state.buf = buf; state.closed = false
+  vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, once = true, callback = function() state.closed = true end })
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
   vim.bo[buf].filetype, vim.bo[buf].modifiable = "querybook", false
   redraw(state)
@@ -344,6 +281,13 @@ function M.open(result, opts)
   map("gR", function()
     local loc = current_location(state); if loc and loc.key then state.raw[loc.key] = not state.raw[loc.key]; redraw(state) end
   end, "Querybook: toggle raw/formatted value")
+  map("K", function()
+    local loc = current_location(state)
+    if not loc or not loc.column then return notify("place cursor on a field", vim.log.levels.WARN) end
+    local column = state.columns[loc.column] or {}
+    local details = { name = column.name, database_type = column.database_type, nullable = column.nullable }
+    notify(vim.inspect(details), vim.log.levels.INFO)
+  end, "Querybook: show source column metadata")
   map("x", function() M.cancel_export(state) end, "Querybook: cancel export")
   map("yv", function()
     local loc = current_location(state); if not loc or loc.kind ~= "field" then return notify("place cursor on a field", vim.log.levels.WARN) end
@@ -372,7 +316,20 @@ function M.open(result, opts)
     end
     if state.handle and state.runner and state.runner.result then
       invoke(state.runner, "payload", { result_handle = state.handle }, function(data, err)
-        if err then notify(err, vim.log.levels.WARN) elseif data then copy(data.payload or data.json or data.text) end
+        if err then notify(err, vim.log.levels.WARN); return end
+        if not data then return notify("payload is unavailable", vim.log.levels.WARN) end
+        if data.payload or data.json or data.text then return copy(data.payload or data.json or data.text) end
+        local payload_rows = {}
+        local payload_columns = data.metadata and data.metadata.columns or state.columns
+        for _, row in ipairs(data.rows or {}) do
+          local fields = {}
+          for i, column in ipairs(payload_columns) do
+            local value, null, cell = render.value(row, i)
+            fields[#fields + 1] = { column = column_name(column), value = null and vim.NIL or value, encoding = cell and cell.kind == "binary" and "base64" or "text" }
+          end
+          payload_rows[#payload_rows + 1] = fields
+        end
+        copy(vim.json.encode({ connection = data.metadata and data.metadata.connection or state.result.connection_name or "connection", database = data.metadata and data.metadata.connection and (data.metadata.connection.database or data.metadata.connection.path) or state.result.database or "", columns = payload_columns, rows = payload_rows }))
       end)
     else
       local fields = {}; for i, column in ipairs(state.columns) do local value, null, cell = render.value(row_for(state), i); fields[#fields + 1] = { column = column_name(column), value = null and vim.NIL or value, encoding = cell and cell.kind == "binary" and "base64" or "text" } end

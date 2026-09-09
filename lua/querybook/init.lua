@@ -112,6 +112,11 @@ end
 
 remove_result = function(bufnr, result)
   if result.extmark then pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, result.extmark) end
+  if M._inspect_state and M._inspect_state.result == result then
+    M._inspect_state.closed = true
+    if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
+    M._inspect_state = nil
+  end
   release_result_handle(result)
   buffer_state(bufnr).results[result.id] = nil
 end
@@ -404,7 +409,7 @@ end
 function M.export(scope)
   local view = inspect_state()
   if not view then return vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
-  vim.ui.input({ prompt = "Export format (jsonl/csv/json): " }, function(format)
+  vim.ui.input({ prompt = "Export format (csv/jsonl): " }, function(format)
     if not format or format == "" then return end
     vim.ui.input({ prompt = "Export path (must not already exist): " }, function(path)
       if not path or path == "" then return end
