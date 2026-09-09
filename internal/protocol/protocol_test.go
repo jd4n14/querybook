@@ -40,4 +40,7 @@ func TestConnectionProtocolRejectsInlineSecretsAndRequiresIDForExecute(t *testin
 	if _, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"update","connection":{"id":"id","name":"n","driver":"mysql"},"password":"sentinel"}`)); err == nil {
 		t.Fatal("update credential accepted")
 	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"update","connection":{"name":"n","driver":"mysql"}}`)); err == nil {
+		t.Fatal("update without connection_id accepted")
+	}
 }

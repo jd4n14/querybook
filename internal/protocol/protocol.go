@@ -133,7 +133,7 @@ func (r Request) Validate() error {
 				return errors.New("missing connection metadata")
 			}
 		}
-		if r.Op == "delete" || r.Op == "set_password" || r.Op == "test" || r.Op == "select" {
+		if r.Op == "delete" || r.Op == "set_password" || r.Op == "test" || r.Op == "select" || r.Op == "update" {
 			if r.ConnectionID == "" {
 				return errors.New("missing connection_id")
 			}

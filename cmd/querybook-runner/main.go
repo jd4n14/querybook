@@ -72,6 +72,11 @@ func (r *runner) connection(req protocol.Request) {
 		c, err = store.Create(req.Connection, password)
 		event.Connection = &c
 	case "update":
+		if req.Connection.ID != "" && req.Connection.ID != req.ConnectionID {
+			r.err(req, "invalid_connection", "connection id mismatch")
+			return
+		}
+		req.Connection.ID = req.ConnectionID
 		var c protocol.Connection
 		c, err = store.Update(req.Connection)
 		event.Connection = &c
