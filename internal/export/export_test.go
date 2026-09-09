@@ -157,6 +157,13 @@ func TestExportStreamPublishesOnlyAfterRunnerCompletes(t *testing.T) {
 	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "one") {
 		t.Fatalf("output=%q err=%v", b, err)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0600 {
+		t.Fatalf("output mode=%#o, want 0600", mode)
+	}
 }
 
 func TestExportStreamRunnerFailureRemovesTemporaryFile(t *testing.T) {
