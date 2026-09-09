@@ -10,9 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jd4n14/querybook/internal/connections"
 	"github.com/jd4n14/querybook/internal/credentials"
 	"github.com/jd4n14/querybook/internal/executor"
+	"github.com/jd4n14/querybook/internal/export"
 	"github.com/jd4n14/querybook/internal/protocol"
 	"github.com/jd4n14/querybook/internal/results"
 )
@@ -20,13 +22,15 @@ import (
 const runnerVersion = "1.0.0"
 
 type runner struct {
-	mu        sync.Mutex
-	outMu     sync.Mutex
-	active    map[string]context.CancelFunc
-	closed    bool
-	store     *connections.Store
-	storePath string
-	results   *results.Registry
+	mu          sync.Mutex
+	outMu       sync.Mutex
+	active      map[string]context.CancelFunc
+	closed      bool
+	store       *connections.Store
+	storePath   string
+	results     *results.Registry
+	exports     map[string]context.CancelFunc
+	exportOwner map[string]string
 }
 
 func (r *runner) send(e protocol.Event) error {
@@ -309,7 +313,38 @@ func (r *runner) result(req protocol.Request) {
 			return
 		}
 		event.Changes = changes
+	case "payload":
+		snap, err := r.results.Get(req.Handle)
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		event.Rows, event.TotalRows, event.Pinned, event.Metadata = snap.Rows, int64(snap.TotalRows), snap.Pinned, resultProtocolMetadata(snap.Meta)
+	case "export":
+		if err := r.startExport(req); err != nil {
+			r.err(req, "export", err.Error())
+		}
+		return
+	case "export_cancel":
+		r.mu.Lock()
+		cancel := r.exports[req.ExportID]
+		r.mu.Unlock()
+		if cancel == nil {
+			r.err(req, "export", "export is not running")
+			return
+		}
+		cancel()
+		event.ExportID, event.Progress = req.ExportID, false
 	case "release":
+		r.mu.Lock()
+		for id, owner := range r.exportOwner {
+			if owner == req.Handle {
+				if cancel := r.exports[id]; cancel != nil {
+					cancel()
+				}
+			}
+		}
+		r.mu.Unlock()
 		if err := r.results.Release(req.Handle); err != nil {
 			r.err(req, "result", err.Error())
 			return
@@ -335,8 +370,113 @@ func (r *runner) result(req protocol.Request) {
 	_ = r.send(event)
 }
 
+func sameConnection(a, b protocol.Connection) bool {
+	return a.ID == b.ID && a.Driver == b.Driver && a.Path == b.Path && a.Host == b.Host && a.Port == b.Port && a.Socket == b.Socket && a.User == b.User && a.Database == b.Database && a.Charset == b.Charset
+}
+
+func (r *runner) startExport(req protocol.Request) error {
+	if req.Path == "" {
+		return errors.New("missing destination")
+	}
+	snap, err := r.results.Get(req.Handle)
+	if err != nil {
+		return err
+	}
+	format := export.Format(strings.ToLower(req.Format))
+	if format == "" {
+		format = export.CSV
+	}
+	if format != export.CSV && format != export.JSONL {
+		return errors.New("unsupported format")
+	}
+	exportID := req.ExportID
+	if exportID == "" {
+		exportID = uuid.NewString()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.mu.Lock()
+	if r.exports == nil {
+		r.exports, r.exportOwner = make(map[string]context.CancelFunc), make(map[string]string)
+	}
+	r.exports[exportID], r.exportOwner[exportID] = cancel, req.Handle
+	r.mu.Unlock()
+	go func() {
+		defer func() {
+			r.mu.Lock()
+			delete(r.exports, exportID)
+			delete(r.exportOwner, exportID)
+			r.mu.Unlock()
+		}()
+		opts := export.Options{Format: format, ProgressRows: 500, ProgressEvery: 250 * time.Millisecond, Progress: func(p export.Progress) error {
+			return r.send(protocol.Event{Version: 1, Type: "result", RequestID: req.RequestID, Op: "export", Handle: req.Handle, ExportID: exportID, Progress: true, RowCount: p.Rows, Bytes: p.BytesWritten})
+		}}
+		var stats export.Stats
+		var exportErr error
+		if req.Scope == "full" {
+			store, storeErr := r.metadataStore(req.StorePath)
+			if storeErr != nil {
+				exportErr = storeErr
+			} else {
+				if snap.Meta.ConnectionID != "" {
+					current, getErr := store.Get(snap.Meta.ConnectionID)
+					if getErr != nil {
+						exportErr = errors.New("connection metadata was deleted")
+					} else if !sameConnection(snap.Meta.Connection, current) {
+						exportErr = errors.New("connection metadata changed since execution")
+					}
+				}
+				if exportErr == nil {
+					streamReq := protocol.Request{Version: 1, Type: "execute", RequestID: req.RequestID, ExecutionID: exportID, ConnectionID: snap.Meta.ConnectionID, Connection: snap.Meta.Connection, SQL: snap.Meta.OriginalSQL}
+					_, exportErr = export.ExportStream(ctx, req.Path, opts, func(cb export.StreamCallbacks) error {
+						_, streamErr := executor.Stream(ctx, streamReq, store.Resolve, executor.StreamSink{
+							OnSchema: func(set int, columns []protocol.Column) error { return cb.Schema(columns) },
+							OnRow:    func(set int, row []protocol.Cell) error { return cb.Row(ctx, row) },
+						}, executor.StreamOptions{})
+						return streamErr
+					})
+				}
+			}
+		} else {
+			rows := snap.Rows
+			if req.Filter != "" || req.Expression != "" {
+				expression := req.Filter
+				if expression == "" {
+					expression = req.Expression
+				}
+				viewID, _, filterErr := r.results.Filter(req.Handle, expression)
+				if filterErr != nil {
+					exportErr = filterErr
+				} else {
+					filtered, _, pageErr := r.results.PageView(req.Handle, viewID, 0, int(^uint(0)>>1))
+					if pageErr != nil {
+						exportErr = pageErr
+					} else {
+						rows = filtered.Rows
+					}
+				}
+			} else if req.ViewID != "" {
+				view, _, pageErr := r.results.PageView(req.Handle, req.ViewID, 0, int(^uint(0)>>1))
+				if pageErr != nil {
+					exportErr = pageErr
+				} else {
+					rows = view.Rows
+				}
+			}
+			if exportErr == nil {
+				stats, exportErr = export.ExportCurrent(ctx, req.Path, snap.Meta.Columns, rows, opts)
+			}
+		}
+		if exportErr != nil {
+			_ = r.send(protocol.Event{Version: 1, Type: "error", RequestID: req.RequestID, Op: "export", ExportID: exportID, Code: "export", Message: exportErr.Error(), Terminal: true})
+			return
+		}
+		_ = r.send(protocol.Event{Version: 1, Type: "result", RequestID: req.RequestID, Op: "export", Handle: req.Handle, ExportID: exportID, Path: req.Path, RowCount: stats.Rows, Bytes: stats.BytesWritten, Terminal: true})
+	}()
+	return nil
+}
+
 func main() {
-	r := &runner{active: map[string]context.CancelFunc{}, results: results.New(results.Options{})}
+	r := &runner{active: map[string]context.CancelFunc{}, results: results.New(results.Options{}), exports: map[string]context.CancelFunc{}, exportOwner: map[string]string{}}
 	_ = r.send(protocol.Event{Version: 1, Type: "ready", RunnerVersion: runnerVersion})
 	d := protocol.NewDecoder(os.Stdin, 2*1024*1024)
 	for {
@@ -379,6 +519,9 @@ func (r *runner) shutdown() {
 	r.mu.Lock()
 	r.closed = true
 	for _, c := range r.active {
+		c()
+	}
+	for _, c := range r.exports {
 		c()
 	}
 	r.mu.Unlock()

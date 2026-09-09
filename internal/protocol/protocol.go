@@ -152,6 +152,10 @@ type Event struct {
 	SourceIndices      []int              `json:"source_indices,omitempty"`
 	MatchingIndices    []int              `json:"matching_indices,omitempty"`
 	Valid              bool               `json:"valid,omitempty"`
+	ExportID           string             `json:"export_id,omitempty"`
+	Progress           bool               `json:"progress,omitempty"`
+	Bytes              int64              `json:"bytes,omitempty"`
+	Path               string             `json:"path,omitempty"`
 }
 
 type ResultDifference struct {
