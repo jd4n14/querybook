@@ -119,7 +119,7 @@ local function format_meta(result, state)
   local retained = state.retained_count or #(state.rows or {})
   local matching = state.matching_count or #state.indices
   local page_count = math.max(1, math.ceil(matching / state.page_size))
-  local source = state.current_source and (state.current_source .. "/" .. retained) or "-"
+  local source = state.current_source and ((state.current_source + 1) .. "/" .. retained) or "-"
   lines[#lines + 1] = string.format("matching %d/%d · source %s · page %d/%d", state.current_match or 0, matching, source, state.page, page_count)
   if state.filter then lines[#lines + 1] = "filter: " .. state.filter end
   return lines
@@ -182,26 +182,26 @@ end
 
 local function normalize_page(state, data)
   if type(data) ~= "table" then return false end
+  if data.metadata and data.metadata.columns then state.columns = data.metadata.columns end
   if data.columns then state.columns = data.columns end
   local rows = data.rows or data.result_rows
   if rows then
-    state.rows, state.by_source = {}, {}
-    local source = data.source_indices or data.row_indices or data.indices or {}
+    state.rows, state.by_source, state.page_sources = {}, {}, {}
+    local source = data.source_rows or data.source_indices or data.row_indices or data.indices or {}
     for i, row in ipairs(rows) do
-      local source_index = tonumber(source[i]) or (type(row) == "table" and tonumber(row.source_index)) or i
+      local source_index = tonumber(source[i]) or (type(row) == "table" and tonumber(row.source_index)) or (i - 1)
       if type(row) == "table" and row.row then row = row.row end
-      state.rows[i], state.by_source[source_index] = row, row
+      state.rows[i], state.by_source[source_index], state.page_sources[i] = row, row, source_index
     end
   end
   local trees = data.trees or data.json_trees or data.presentation
   if trees then
     for key, tree in pairs(trees) do state.trees[key] = tree end
   end
-  state.retained_count = tonumber(data.retained_count or data.total_retained or data.row_count) or state.retained_count
-  state.matching_count = tonumber(data.matching_count or data.total_matching) or state.matching_count
-  if data.page then state.page = tonumber(data.page) or state.page end
-  state.indices = data.matching_indices or state.indices
-  state.current_source = tonumber(data.current_source or data.source_index) or state.current_source
+  state.retained_count = tonumber(data.retained_count or data.total_retained) or state.retained_count
+  state.matching_count = tonumber(data.total_rows or data.matching_count or data.total_matching) or state.matching_count
+  if data.view_id then state.view_id = data.view_id end
+  state.current_source = tonumber(data.current_source or data.source_row) or state.current_source
   state.current_match = tonumber(data.current_match or data.match_index) or state.current_match
   return true
 end
@@ -224,22 +224,28 @@ local function redraw(state)
 end
 
 local function request_page(state, payload)
-  payload = vim.tbl_extend("force", payload or {}, { result_handle = state.handle, page_size = state.page_size, page = state.page })
+  payload = vim.tbl_extend("force", payload or {}, { result_handle = state.handle, limit = (payload and payload.limit) or state.page_size, view_id = state.view_id })
+  if payload.offset == nil then payload.offset = math.max(0, ((state.page or 1) - 1) * (payload.limit or state.page_size)) end
   invoke(state.runner, "view", payload, function(data, err)
     if state.closed or state.generation ~= state.result.generation then return end
     if err then notify(err, vim.log.levels.WARN); return end
-    normalize_page(state, data); redraw(state)
+    normalize_page(state, data)
+    if state.page_sources and state.page_sources[1] ~= nil then
+      state.current_source = state.page_sources[1]
+      if payload.limit > 1 then state.current_match = math.max(1, (payload.offset or 0) + 1) end
+    end
+    redraw(state)
   end)
 end
 
 local function set_row(state, match)
   if state.matching_count == 0 then state.current_match = 0; state.current_source = nil; redraw(state); return end
   state.current_match = math.max(1, math.min(match, state.matching_count))
-  local source = state.indices[state.current_match]
+  local source = state.indices and state.indices[state.current_match]
   if source then state.current_source = tonumber(source) end
   local page = math.floor((state.current_match - 1) / state.page_size) + 1
   state.page = page
-  request_page(state, { match_index = state.current_match, source_index = state.current_source })
+  request_page(state, { offset = state.current_match - 1, limit = 1, source_row = state.current_source })
 end
 
 local function current_location(state)
@@ -252,21 +258,17 @@ function M.filter(state, expression)
   invoke(state.runner, "filter", { result_handle = state.handle, expression = expression, filter = expression }, function(data, err)
     if state.closed or state.generation ~= state.result.generation then return end
     if err or not data or data.valid == false then notify(err or data.error or "invalid filter", vim.log.levels.WARN); return end
-    local indices = data.matching_indices or data.indices
-    if not indices then notify("filter response did not include matching rows", vim.log.levels.WARN); return end
-    state.filter, state.indices, state.matching_count, state.current_match, state.current_source, state.page = expression, indices, #indices, 0, nil, 1
+    state.filter, state.view_id, state.matching_count, state.current_match, state.current_source, state.page = expression, data.view_id, tonumber(data.total_rows or data.matching_count), 0, nil, 1
+    state.indices = nil
     redraw(state); set_row(state, 1)
   end)
 end
 
 function M.clear_filter(state)
   if not state.filter then return end
-  invoke(state.runner, "filter_clear", { result_handle = state.handle }, function(data, err)
-    if err then notify(err, vim.log.levels.WARN); return end
-    state.filter = nil; state.indices = data and (data.matching_indices or data.indices) or state.all_indices
-    state.matching_count = #state.indices; state.current_match, state.current_source, state.page = 0, nil, 1
-    redraw(state); set_row(state, 1)
-  end)
+  state.filter, state.view_id, state.indices = nil, nil, state.all_indices
+  state.matching_count, state.current_match, state.current_source, state.page = #state.indices, 0, nil, 1
+  redraw(state); set_row(state, 1)
 end
 
 function M.pin(state)
@@ -279,11 +281,11 @@ end
 
 function M.compare(state)
   if not state.pinned_source then return notify("pin a row first", vim.log.levels.WARN) end
-  invoke(state.runner, "compare", { result_handle = state.handle, left_source_index = state.pinned_source, right_source_index = state.current_source }, function(data, err)
+  invoke(state.runner, "compare", { result_handle = state.handle, source_row = state.pinned_source, current_row = state.current_source }, function(data, err)
     if err then notify(err, vim.log.levels.WARN); return end
     local lines = { "Querybook compare", string.format("pinned source %s · current source %s", tostring(state.pinned_source), tostring(state.current_source)) }
-    for _, item in ipairs((data and (data.columns or data.differences)) or {}) do
-      lines[#lines + 1] = string.format("%s: %s", tostring(item.name or item.column or "column"), tostring(item.status or item.equal and "equal" or "different"))
+    for _, item in ipairs((data and (data.changes or data.columns or data.differences)) or {}) do
+      lines[#lines + 1] = string.format("%s %s: %s", tostring(item.column_name or item.name or item.column or "column"), tostring(item.path or ""), tostring(item.kind or item.status or "different"))
     end
     vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
   end)
@@ -315,10 +317,10 @@ function M.open(result, opts)
   local state = {
     result = result, runner = opts.runner, handle = result.result_handle or result.handle_id,
     generation = result.generation, columns = columns, rows = rows, by_source = {}, json = {}, trees = {}, expanded = {}, raw = {},
-    page_size = opts.page_size or 10, page = 1, matching_count = #rows, retained_count = #rows,
-    indices = {}, all_indices = {}, current_match = #rows > 0 and 1 or 0, current_source = #rows > 0 and 1 or nil,
+    page_size = opts.page_size or 10, page = 1, matching_count = #rows, retained_count = tonumber(result.row_count) or #rows,
+    indices = {}, all_indices = {}, current_match = #rows > 0 and 1 or 0, current_source = #rows > 0 and 0 or nil,
   }
-  for i, row in ipairs(rows) do state.by_source[i], state.indices[i], state.all_indices[i] = row, i, i end
+  for i, row in ipairs(rows) do local source = i - 1; state.by_source[source], state.indices[i], state.all_indices[i] = row, source, source end
   local buf = vim.api.nvim_create_buf(false, true); state.buf = buf; state.closed = false
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
   vim.bo[buf].filetype, vim.bo[buf].modifiable = "querybook", false
@@ -345,7 +347,17 @@ function M.open(result, opts)
   map("x", function() M.cancel_export(state) end, "Querybook: cancel export")
   map("yv", function()
     local loc = current_location(state); if not loc or loc.kind ~= "field" then return notify("place cursor on a field", vim.log.levels.WARN) end
-    local row = state.by_source[loc.row] or row_for(state); local text = render.value_text(row, loc.column); vim.fn.setreg('"', text); pcall(vim.fn.setreg, "+", text)
+    local function copy(text) vim.fn.setreg('"', text); pcall(vim.fn.setreg, "+", text) end
+    if state.handle and state.runner and state.runner.result then
+      invoke(state.runner, "cell", { result_handle = state.handle, row = loc.row, column = loc.column - 1 }, function(data, err)
+        if err then notify(err, vim.log.levels.WARN); return end
+        local cell = data and (data.cell or data.Cell)
+        if not cell then return notify("cell is unavailable", vim.log.levels.WARN) end
+        if cell.kind == "null" then copy("NULL") elseif cell.kind == "binary" then copy("base64:" .. tostring(cell.base64 or "")) else copy(tostring(cell.text or "")) end
+      end)
+    else
+      local row = state.by_source[loc.row] or row_for(state); copy(render.value_text(row, loc.column))
+    end
   end, "Querybook: copy exact field")
   map("yr", function()
     local loc = current_location(state); if not loc or not loc.row then return notify("place cursor on a row", vim.log.levels.WARN) end
@@ -368,7 +380,7 @@ function M.open(result, opts)
     end
   end, "Querybook: copy exact payload JSON")
   map("q", function() state.closed = true; vim.api.nvim_win_close(win, true) end, "Querybook: close inspector")
-  if state.handle then request_page(state, { page = 1, match_index = state.current_match }) end
+  if state.handle then request_page(state, { offset = 0, limit = state.page_size }) end
   return state
 end
 

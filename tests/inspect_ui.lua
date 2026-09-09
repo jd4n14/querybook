@@ -22,12 +22,12 @@ local active_filter = false
 function fake.result(op, payload, callback)
   calls[#calls + 1] = { op = op, payload = payload }
   if op == "view" then
-    local source = payload.source_index or (payload.page == 2 and 2 or 1)
-    callback({ columns = columns, rows = { rows[source] }, source_indices = { source }, retained_count = 2, matching_count = active_filter and 1 or 2, page = payload.page or 1, current_source = source, current_match = active_filter and 1 or source }, nil)
+    local filtered = payload.view_id == "v1"
+    local source = payload.source_row or (filtered and 1 or (payload.offset or 0))
+    callback({ metadata = { columns = columns }, rows = { rows[source + 1] }, source_rows = { source }, total_rows = filtered and 1 or 2, view_id = filtered and "v1" or nil }, nil)
   elseif op == "filter" then
     if payload.expression == "bad" then callback({ valid = false, error = "invalid filter" }, nil)
-    else active_filter = true; callback({ matching_indices = { 2 }, matching_count = 1 }, nil) end
-  elseif op == "filter_clear" then active_filter = false; callback({ matching_indices = { 1, 2 } }, nil)
+    else active_filter = true; callback({ view_id = "v1", total_rows = 1 }, nil) end
   elseif op == "compare" then callback({ differences = { { name = "large", status = "different" } } }, nil)
   elseif op == "export" then callback({ path = payload.path }, nil) end
 end
@@ -46,7 +46,7 @@ assert(text():find("NULL", 1, true) and text():find("empty [VARCHAR] = ", 1, tru
 inspect.filter(state, "bad")
 assert(state.filter == nil and state.matching_count == 2, "invalid filter keeps previous view")
 inspect.filter(state, ".nested")
-assert(state.filter == ".nested" and state.matching_count == 1 and state.current_source == 2, "valid filter maps matching source index")
+assert(state.filter == ".nested" and state.matching_count == 1 and state.current_source == 1, "valid filter maps matching source index")
 inspect.clear_filter(state)
 assert(state.filter == nil and state.matching_count == 2, "clear filter restores all retained rows")
 inspect.pin(state)
