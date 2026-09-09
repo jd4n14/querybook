@@ -330,6 +330,14 @@ func jsonValue(meta Metadata, index int, c protocol.Cell) any {
 			return exactNumber{raw: c.Text}
 		}
 	}
+	if index < len(meta.Columns) && isJSONBoolType(meta.Columns[index].DatabaseType) {
+		switch c.Text {
+		case "0", "false", "FALSE":
+			return false
+		case "1", "true", "TRUE":
+			return true
+		}
+	}
 	return c.Text
 }
 
@@ -351,6 +359,11 @@ func isJSONNumericType(typ string) bool {
 		}
 	}
 	return false
+}
+
+func isJSONBoolType(typ string) bool {
+	t := strings.ToLower(typ)
+	return strings.Contains(t, "bool") || t == "bit" || strings.HasPrefix(t, "bit(")
 }
 
 // JSONNumber is exposed for tests and future filters that need to inspect a

@@ -146,6 +146,14 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	if len(ordinals) != 1 || ordinals[0] != 2 {
 		t.Fatalf("SQL null ordinals=%#v", ordinals)
 	}
+	view, count, err = r.Filter(id, "@.flag == false")
+	if err != nil || count != 2 {
+		t.Fatalf("boolean filter view=%s count=%d err=%v", view, count, err)
+	}
+	_, ordinals, _ = r.PageView(id, view, 0, 10)
+	if len(ordinals) != 2 || ordinals[0] != 0 || ordinals[1] != 1 {
+		t.Fatalf("boolean ordinals=%#v", ordinals)
+	}
 	if _, _, err = r.Filter(id, "@.missing == 1"); err == nil {
 		t.Fatal("unknown named column accepted")
 	}
