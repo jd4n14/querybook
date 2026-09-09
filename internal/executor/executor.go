@@ -59,7 +59,9 @@ type Result struct {
 	AutoLimitWhy  string
 }
 
-func dsn(c protocol.Connection) (string, error) {
+func dsn(c protocol.Connection) (string, error) { return dsnWithPassword(c, nil) }
+
+func dsnWithPassword(c protocol.Connection, password []byte) (string, error) {
 	switch c.Driver {
 	case "sqlite":
 		if c.Path == "" {
@@ -86,9 +88,9 @@ func dsn(c protocol.Connection) (string, error) {
 			charset = "utf8mb4"
 		}
 		if c.Socket != "" {
-			return user + ":" + c.Password + "@unix(" + c.Socket + ")/" + c.Database + "?charset=" + charset + "&parseTime=false", nil
+			return user + ":" + string(password) + "@unix(" + c.Socket + ")/" + c.Database + "?charset=" + charset + "&parseTime=false", nil
 		}
-		return user + ":" + c.Password + "@tcp(" + addr + ")/" + c.Database + "?charset=" + charset + "&parseTime=false", nil
+		return user + ":" + string(password) + "@tcp(" + addr + ")/" + c.Database + "?charset=" + charset + "&parseTime=false", nil
 	default:
 		return "", errors.New("unsupported driver")
 	}
@@ -139,26 +141,73 @@ func isBinaryType(t string) bool {
 
 type emitter func(protocol.Event) error
 
+type Resolver func(string) (protocol.Connection, []byte, error)
+
+func TestConnection(ctx context.Context, resolve Resolver, id string) error {
+	if resolve == nil {
+		return errors.New("connection: connection resolver unavailable")
+	}
+	c, password, err := resolve(id)
+	if err != nil {
+		return err
+	}
+	dsnv, err := dsnWithPassword(c, password)
+	if err != nil {
+		return errors.New("connection: connection test failed")
+	}
+	db, err := sql.Open(c.Driver, dsnv)
+	if err != nil {
+		return errors.New("connection: connection test failed")
+	}
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return errors.New("connection: connection test failed")
+	}
+	return nil
+}
+
 func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, error) {
+	return execute(ctx, req, nil, emit)
+}
+
+func ExecuteWithResolver(ctx context.Context, req protocol.Request, resolve Resolver, emit emitter) (Result, error) {
+	return execute(ctx, req, resolve, emit)
+}
+
+func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit emitter) (Result, error) {
 	d := policy.Allow(req.SQL, req.Force)
 	if !d.Allowed {
 		return Result{}, fmt.Errorf("unsafe_statement: %s", d.Reason)
 	}
-	dsnv, err := dsn(req.Connection)
+	var c protocol.Connection
+	var password []byte
+	var err error
+	if req.ConnectionID != "" {
+		if resolve == nil {
+			return Result{}, errors.New("connection: connection resolver unavailable")
+		}
+		c, password, err = resolve(req.ConnectionID)
+	} else {
+		c = req.Connection
+	}
 	if err != nil {
 		return Result{}, err
 	}
-	driver := req.Connection.Driver
+	dsnv, err := dsnWithPassword(c, password)
+	if err != nil {
+		return Result{}, err
+	}
+	driver := c.Driver
 	db, err := sql.Open(driver, dsnv)
 	if err != nil {
-		return Result{}, safeError(err)
+		return Result{}, errors.New("connection: connection failed")
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(0)
 	defer db.Close()
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return Result{}, safeError(err)
+		return Result{}, errors.New("connection: connection failed")
 	}
 	defer conn.Close()
 	var rows *sql.Rows
@@ -166,12 +215,12 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 	if !req.Force {
 		if driver == "sqlite" {
 			if _, err = conn.ExecContext(ctx, "PRAGMA query_only=ON"); err != nil {
-				return Result{}, fmt.Errorf("read-only boundary: %w", safeError(err))
+				return Result{}, errors.New("connection: read-only boundary unavailable")
 			}
 		} else {
 			tx, err = conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 			if err != nil {
-				return Result{}, fmt.Errorf("read-only boundary: %w", safeError(err))
+				return Result{}, errors.New("connection: read-only boundary unavailable")
 			}
 			defer tx.Rollback()
 		}
@@ -185,7 +234,7 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 			result, err = conn.ExecContext(ctx, req.SQL)
 		}
 		if err != nil {
-			return Result{}, queryError(ctx, err)
+			return Result{}, queryError(ctx, err, dsnv, string(password))
 		}
 		affected, _ := result.RowsAffected()
 		if err := emit(protocol.Event{Version: 1, Type: "result_start", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, ResultSet: 0, Columns: []protocol.Column{}}); err != nil {
@@ -200,7 +249,7 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 		rows, err = conn.QueryContext(ctx, executedSQL)
 	}
 	if err != nil {
-		return Result{}, queryError(ctx, err)
+		return Result{}, queryError(ctx, err, dsnv, string(password))
 	}
 	defer rows.Close()
 	l := limits(req)
@@ -213,7 +262,7 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 		out.ResultSets++
 		cols, err := rows.ColumnTypes()
 		if err != nil {
-			return out, safeError(err)
+			return out, safeError(err, dsnv, string(password))
 		}
 		meta := make([]protocol.Column, len(cols))
 		for i, c := range cols {
@@ -239,7 +288,7 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 				dest[i] = &raw[i]
 			}
 			if err := rows.Scan(dest...); err != nil {
-				return out, safeError(err)
+				return out, safeError(err, dsnv, string(password))
 			}
 			row := make([]protocol.Cell, len(cols))
 			var rowBytes int64 = 16
@@ -281,7 +330,7 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 			}
 		}
 		if err := rows.Err(); err != nil {
-			return out, queryError(ctx, err)
+			return out, queryError(ctx, err, dsnv, string(password))
 		}
 		if len(batch) > 0 {
 			if err := emit(protocol.Event{Version: 1, Type: "rows", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, ResultSet: out.ResultSets - 1, Rows: batch}); err != nil {
@@ -302,20 +351,25 @@ func Execute(ctx context.Context, req protocol.Request, emit emitter) (Result, e
 	return out, nil
 }
 
-func queryError(ctx context.Context, err error) error {
+func queryError(ctx context.Context, err error, forbidden ...string) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("timeout: %w", ctx.Err())
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return fmt.Errorf("cancelled: %w", ctx.Err())
 	}
-	return fmt.Errorf("query: %w", safeError(err))
+	return fmt.Errorf("query: %w", safeError(err, forbidden...))
 }
-func safeError(err error) error {
+func safeError(err error, forbidden ...string) error {
 	if err == nil {
 		return nil
 	}
 	s := err.Error()
+	for _, value := range forbidden {
+		if value != "" {
+			s = strings.ReplaceAll(s, value, "[redacted]")
+		}
+	}
 	s = strings.ReplaceAll(strings.ReplaceAll(s, "password", "credential"), "Password", "credential")
 	return errors.New(s)
 }

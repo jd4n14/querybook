@@ -3,7 +3,9 @@ package executor
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jd4n14/querybook/internal/protocol"
@@ -125,7 +127,7 @@ func TestSQLiteDriverReadOnlyBoundaryRejectsWrite(t *testing.T) {
 }
 
 func TestMySQLDSNUsesDriverAddressSyntax(t *testing.T) {
-	d, err := dsn(protocol.Connection{Driver: "mysql", Host: "127.0.0.1", Port: 3307, User: "u", Password: "p", Database: "db"})
+	d, err := dsnWithPassword(protocol.Connection{Driver: "mysql", Host: "127.0.0.1", Port: 3307, User: "u", Database: "db"}, []byte("p"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +140,15 @@ func TestMySQLDSNUsesDriverAddressSyntax(t *testing.T) {
 	}
 	if d != "u:@unix(/tmp/mysql.sock)/db?charset=utf8mb4&parseTime=false" {
 		t.Fatalf("socket dsn=%q", d)
+	}
+}
+
+func TestSafeErrorRedactsDSNAndCredentialSentinel(t *testing.T) {
+	secret := "querybook-secret-sentinel"
+	dsn := "u:" + secret + "@tcp(db:3306)/app"
+	err := safeError(errors.New("driver echoed "+dsn+" in query="+secret), dsn, secret)
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), dsn) {
+		t.Fatalf("secret leaked: %q", err)
 	}
 }
 
