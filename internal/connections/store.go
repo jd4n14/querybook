@@ -146,8 +146,24 @@ func validate(c protocol.Connection) error {
 	return nil
 }
 
+func normalizeConnection(c protocol.Connection) (protocol.Connection, error) {
+	if c.Driver == "sqlite" {
+		path, err := NormalizeSQLitePath(c.Path)
+		if err != nil {
+			return protocol.Connection{}, err
+		}
+		c.Path = path
+	}
+	return c, nil
+}
+
 func (s *Store) Create(c protocol.Connection, password *string) (protocol.Connection, error) {
 	if err := validate(c); err != nil {
+		return protocol.Connection{}, err
+	}
+	var err error
+	c, err = normalizeConnection(c)
+	if err != nil {
 		return protocol.Connection{}, err
 	}
 	c.ID = uuid.NewString()
@@ -198,6 +214,10 @@ func (s *Store) List() ([]protocol.Connection, string, error) {
 		if err := rows.Scan(&c.ID, &c.Name, &c.Driver, &c.Path, &c.Host, &c.Port, &c.Socket, &c.User, &c.Database, &c.Charset, &c.HasPassword); err != nil {
 			return nil, "", errf("metadata_store", "could not read metadata")
 		}
+		c, err = normalizeConnection(c)
+		if err != nil {
+			return nil, "", err
+		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -215,6 +235,10 @@ func (s *Store) Get(id string) (protocol.Connection, error) {
 	if err != nil {
 		return protocol.Connection{}, errf("metadata_store", "could not read metadata")
 	}
+	c, err = normalizeConnection(c)
+	if err != nil {
+		return protocol.Connection{}, err
+	}
 	return c, nil
 }
 
@@ -223,6 +247,11 @@ func (s *Store) Update(c protocol.Connection) (protocol.Connection, error) {
 		return protocol.Connection{}, errf("connection_not_found", "connection not found")
 	}
 	if err := validate(c); err != nil {
+		return protocol.Connection{}, err
+	}
+	var err error
+	c, err = normalizeConnection(c)
+	if err != nil {
 		return protocol.Connection{}, err
 	}
 	res, err := s.db.Exec(`UPDATE connections SET name=?,driver=?,path=?,host=?,port=?,socket=?,user=?,database_name=?,charset=? WHERE id=?`, c.Name, c.Driver, c.Path, c.Host, c.Port, c.Socket, c.User, c.Database, c.Charset, c.ID)
@@ -327,13 +356,16 @@ func (s *Store) Test(ctx context.Context, id string) error {
 		return err
 	}
 	if c.Driver == "sqlite" {
+		if err := CheckSQLitePath(c.Path); err != nil {
+			return err
+		}
 		db, err := sql.Open("sqlite", c.Path)
 		if err != nil {
-			return errf("connection", "connection test failed")
+			return errf("sqlite_path_unavailable", "SQLite database could not be opened")
 		}
 		defer db.Close()
 		if err := db.PingContext(ctx); err != nil {
-			return errf("connection", "connection test failed")
+			return errf("sqlite_path_unavailable", "SQLite database could not be opened")
 		}
 		return nil
 	}

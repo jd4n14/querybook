@@ -189,6 +189,54 @@ func TestPasswordlessCRUDWorksWithUnavailableNativeCredentialStore(t *testing.T)
 	}
 }
 
+func TestSQLitePathsAreNormalizedAtMetadataBoundary(t *testing.T) {
+	s, _, _ := openTest(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.Create(protocol.Connection{Name: "tilde", Driver: "sqlite", Path: "~/querybook-fixture.sqlite3"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "querybook-fixture.sqlite3")
+	if c.Path != want {
+		t.Fatalf("created path=%q, want %q", c.Path, want)
+	}
+	got, err := s.Get(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != want {
+		t.Fatalf("stored path=%q, want %q", got.Path, want)
+	}
+	if _, err := s.Create(protocol.Connection{Name: "other-user", Driver: "sqlite", Path: "~someone/db.sqlite3"}, nil); err == nil || !strings.HasPrefix(err.Error(), "invalid_connection:") {
+		t.Fatalf("unexpected other-user path result: %v", err)
+	}
+}
+
+func TestSQLitePathDiagnosticsDoNotCreateFiles(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing.sqlite3")
+	if err := CheckSQLitePath(missing); err == nil || !strings.HasPrefix(err.Error(), "sqlite_database_missing:") {
+		t.Fatalf("missing database error=%v", err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("missing database was created: %v", err)
+	}
+	missingParent := filepath.Join(root, "nested", "missing.sqlite3")
+	if err := CheckSQLitePath(missingParent); err == nil || !strings.HasPrefix(err.Error(), "sqlite_parent_missing:") {
+		t.Fatalf("missing parent error=%v", err)
+	}
+	directory := filepath.Join(root, "directory")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckSQLitePath(directory); err == nil || !strings.HasPrefix(err.Error(), "sqlite_path_invalid:") {
+		t.Fatalf("directory path error=%v", err)
+	}
+}
+
 func TestDeleteCredentialFailureRetainsMetadata(t *testing.T) {
 	s, f, _ := openTest(t)
 	c, err := s.Create(protocol.Connection{Name: "mysql", Driver: "mysql", Host: "h"}, strptr("sentinel"))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,6 +101,13 @@ func TestSQLiteSchemaAndRetention(t *testing.T) {
 
 func TestBatchByteLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 	req := protocol.Request{Version: 1, Type: "execute", RequestID: "r", ExecutionID: "e", Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: "SELECT printf('%0*d', 100, 0)", MaxRetainedBytes: 4096, BatchBytes: 32, BatchRows: 10}
 	if _, err := Execute(context.Background(), req, func(protocol.Event) error { return nil }); err == nil {
 		t.Fatal("oversized batch row accepted")
@@ -123,6 +131,32 @@ func TestSQLiteDriverReadOnlyBoundaryRejectsWrite(t *testing.T) {
 	}
 	if _, err = conn.ExecContext(context.Background(), "CREATE TABLE blocked(v TEXT)"); err == nil {
 		t.Fatal("SQLite query_only boundary allowed a write")
+	}
+}
+
+func TestSQLiteConnectionTestDoesNotCreateMissingDatabase(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "missing.sqlite3")
+	err := TestConnection(context.Background(), func(string) (protocol.Connection, []byte, error) {
+		return protocol.Connection{Name: "missing", Driver: "sqlite", Path: path}, nil, nil
+	}, "missing")
+	if err == nil || !strings.HasPrefix(err.Error(), "sqlite_database_missing:") {
+		t.Fatalf("missing database error=%v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("connection test created %s: %v", path, statErr)
+	}
+}
+
+func TestSQLiteReadDoesNotCreateMissingDatabase(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "missing.sqlite3")
+	req := protocol.Request{Version: 1, Type: "execute", RequestID: "r", ExecutionID: "e", Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: "SELECT 1"}
+	if _, err := Execute(context.Background(), req, func(protocol.Event) error { return nil }); err == nil || !strings.HasPrefix(err.Error(), "sqlite_database_missing:") {
+		t.Fatalf("missing database error=%v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("read created %s: %v", path, statErr)
 	}
 }
 

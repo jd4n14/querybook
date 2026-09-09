@@ -10,7 +10,9 @@ local M = { _connections = {}, _active_id = nil, _loading = false, _waiters = {}
 local metadata_keys = { "name", "driver", "host", "port", "database", "username", "socket", "path", "charset" }
 
 local function notify(message, level)
-  vim.notify("Querybook: " .. tostring(message), level or vim.log.levels.INFO)
+  message = tostring(message)
+  if not message:match("^Querybook:%s") then message = "Querybook: " .. message end
+  vim.notify(message, level or vim.log.levels.INFO)
 end
 
 local function scratch(buf, filetype)

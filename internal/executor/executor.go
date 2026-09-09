@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jd4n14/querybook/internal/connections"
 	"github.com/jd4n14/querybook/internal/policy"
 	"github.com/jd4n14/querybook/internal/protocol"
 	_ "modernc.org/sqlite"
@@ -151,6 +152,11 @@ func TestConnection(ctx context.Context, resolve Resolver, id string) error {
 	if err != nil {
 		return err
 	}
+	if c.Driver == "sqlite" {
+		if err := connections.CheckSQLitePath(c.Path); err != nil {
+			return err
+		}
+	}
 	dsnv, err := dsnWithPassword(c, password)
 	if err != nil {
 		return errors.New("connection: connection test failed")
@@ -192,6 +198,11 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 	}
 	if err != nil {
 		return Result{}, err
+	}
+	if c.Driver == "sqlite" && !req.Force {
+		if err := connections.CheckSQLitePath(c.Path); err != nil {
+			return Result{}, err
+		}
 	}
 	dsnv, err := dsnWithPassword(c, password)
 	if err != nil {
