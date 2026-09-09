@@ -127,6 +127,7 @@ The focused test suite uses the Go runner and Neovim headlessly:
 
 ```sh
 nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/run.lua
+nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/connections_ui.lua
 ```
 
 `make test-integration` accepts an isolated disposable MySQL 8.4 socket through
