@@ -52,6 +52,8 @@ for line, value in ipairs(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)) d
 end
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 assert(text():find('"nested":', 1, true), "structured JSON tree expands lazily from exact runner presentation")
+vim.api.nvim_feedkeys(vim.keycode("gR"), "x", false)
+assert(text():find("payload [structured] (raw)", 1, true), "raw/formatted toggle changes only inspector presentation")
 
 inspect.filter(state, "bad")
 assert(state.filter == nil and state.matching_count == 2, "invalid filter keeps previous view")

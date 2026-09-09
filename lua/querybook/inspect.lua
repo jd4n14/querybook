@@ -84,7 +84,8 @@ local function render_lines(state)
     local suffix = typ ~= "" and " [" .. typ .. "]" or ""
     local key = tostring(state.current_source) .. ":" .. tostring(col)
     local expanded = state.expanded[key]
-    add(string.format("%s%s = %s", column_name(column), suffix, state.raw[key] and value or value), { kind = "field", row = state.current_source, column = col, key = key })
+    local mode = state.raw[key] and " (raw)" or ""
+    add(string.format("%s%s%s = %s", column_name(column), suffix, mode, value), { kind = "field", row = state.current_source, column = col, key = key })
     if expanded then
       local root = json_node_for(state, row, col, state.current_source)
       local function visit(node, depth, path)
