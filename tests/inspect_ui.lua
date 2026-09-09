@@ -1,0 +1,64 @@
+-- Inspector UI contract tests.  The fake registry models handle based view,
+-- filter, compare, and export calls without opening a database or touching a
+-- user's connection store.
+local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h")
+vim.opt.rtp:prepend(root)
+local inspect = require("querybook.inspect")
+
+local rows = {
+  { { kind = "text", text = "900719925474099312345" }, { kind = "null" }, { kind = "text", text = "" }, { kind = "text", text = "false" }, { kind = "text", text = '{"nested":{"n":900719925474099312345}}' } },
+  { { kind = "text", text = "second" }, { kind = "text", text = "NULL" }, { kind = "text", text = "value" }, { kind = "text", text = "true" }, { kind = "text", text = '{"nested":{"n":2}}' } },
+}
+local columns = {
+  { name = "large", database_type = "DECIMAL" },
+  { name = "sql_null", database_type = "VARCHAR" },
+  { name = "empty", database_type = "VARCHAR" },
+  { name = "bool_text", database_type = "VARCHAR" },
+  { name = "payload", database_type = "JSON" },
+}
+local calls = {}
+local fake = {}
+local active_filter = false
+function fake.result(op, payload, callback)
+  calls[#calls + 1] = { op = op, payload = payload }
+  if op == "view" then
+    local source = payload.source_index or (payload.page == 2 and 2 or 1)
+    callback({ columns = columns, rows = { rows[source] }, source_indices = { source }, retained_count = 2, matching_count = active_filter and 1 or 2, page = payload.page or 1, current_source = source, current_match = active_filter and 1 or source }, nil)
+  elseif op == "filter" then
+    if payload.expression == "bad" then callback({ valid = false, error = "invalid filter" }, nil)
+    else active_filter = true; callback({ matching_indices = { 2 }, matching_count = 1 }, nil) end
+  elseif op == "filter_clear" then active_filter = false; callback({ matching_indices = { 1, 2 } }, nil)
+  elseif op == "compare" then callback({ differences = { { name = "large", status = "different" } } }, nil)
+  elseif op == "export" then callback({ path = payload.path }, nil) end
+end
+
+local result = { status = "success", query = "select 1", result_handle = "h1", generation = 1, connection_name = "test", database = "db", rows = rows, columns = columns }
+local state = inspect.open(result, { runner = fake, page_size = 1 })
+assert(state and state.handle == "h1")
+local function text()
+  return table.concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+end
+assert(text():find("900719925474099312345", 1, true), "large integer keeps exact spelling")
+assert(text():find("large %[%]", 1, false) == nil, "metadata type is not replaced by guessed content type")
+assert(text():find("structured", 1, true), "JSON metadata receives structured category")
+assert(text():find("NULL", 1, true) and text():find("empty [VARCHAR] = ", 1, true), "null and empty text remain distinct")
+
+inspect.filter(state, "bad")
+assert(state.filter == nil and state.matching_count == 2, "invalid filter keeps previous view")
+inspect.filter(state, ".nested")
+assert(state.filter == ".nested" and state.matching_count == 1 and state.current_source == 2, "valid filter maps matching source index")
+inspect.clear_filter(state)
+assert(state.filter == nil and state.matching_count == 2, "clear filter restores all retained rows")
+inspect.pin(state)
+assert(state.pinned_source == state.current_source, "pin tracks source row")
+inspect.compare(state)
+assert(calls[#calls].op == "compare" and calls[#calls].payload.result_handle == "h1", "compare uses immutable handle")
+inspect.export(state, "filtered", "jsonl", vim.fn.tempname())
+assert(calls[#calls].op == "export" and calls[#calls].payload.scope == "filtered", "export carries explicit scope")
+
+local keymaps = vim.api.nvim_buf_get_keymap(state.buf, "n")
+local seen = {}; for _, map in ipairs(keymaps) do seen[map.lhs] = true end
+assert(seen["[r"] and seen["]r"] and seen["[p"] and seen["]p"] and seen["yv"] and seen["yr"], "inspector navigation and copy mappings installed")
+vim.api.nvim_win_close(state.win, true)
+print("querybook inspector tests passed")
+vim.cmd("qa!")

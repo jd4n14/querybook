@@ -56,6 +56,13 @@ following commands are available:
 :QuerybookRun       " execute the statement under the cursor
 :QuerybookRun!      " explicitly allow a statement classified as a write
 :QuerybookInspect   " open the current result in a floating scratch window
+:QuerybookFilter    " filter the open inspector (JSONPath or shorthand)
+:QuerybookClearFilter " clear the inspector filter
+:QuerybookPinRow    " pin or unpin the current inspector row
+:QuerybookCompareRows " compare current row with the pinned row
+:QuerybookExportRetained " export all retained rows
+:QuerybookExportFiltered " export rows matching the current filter
+:QuerybookExportFull " export the full provider result when available
 :QuerybookRefresh   " re-run the result under the cursor
 :QuerybookClear     " clear the current result
 :QuerybookClear!    " clear all results in the buffer
@@ -100,12 +107,28 @@ or `<leader>qL`/`<leader>qH` to page columns. Configure `preview_rows` and
 preview override when `preview_rows` is not set. Every hidden or clipped
 dimension is labelled explicitly. The runner retains at most `max_retained_rows` rows or
 `max_retained_bytes` bytes (defaults 10000 and 16 MiB), and labels truncation.
-`QuerybookInspect` opens a vertical, navigable view with connection
-profile and database captured at execution time. JSON shaped values are
-formatted for reading without changing their original text. In an inspect
-window, `yv` copies the exact field value, `yr` copies the exact row as ordered
-JSON (including `null`), and `yp` copies the complete payload; all three use
-the retained strings, so decimals and large integers do not round.
+`QuerybookInspect` opens a vertical, navigable view with connection profile
+and database captured at execution time. It keeps an opaque result handle and
+requests pages from the runner, so inspecting a large retained result does not
+copy every row into Lua. `[r`/`]r` move through matching rows and `[p`/`]p`
+move through matching pages. `Enter` or `za` expands a JSON field lazily when
+its column metadata is structured; `gR` toggles raw/formatted presentation.
+`yv` copies the exact field value, `yr` copies the exact row as ordered JSON
+(including `null`), and `yp` copies the complete payload; all three use the
+retained typed cells, so decimals and large integers do not round.
+
+`:QuerybookFilter` sends a JSONPath or shorthand expression to the runner;
+invalid expressions leave the current view unchanged. Filtering is local to
+the retained result and resets to its first matching page on success. Pinning
+stores a source row index and handle, allowing comparison to survive paging
+and filtering. A successful re-run creates a new handle and clears inspector
+filter, pin, and expansion state; a failed re-run retains the previous result.
+
+Exports require an explicit scope (`retained`, `filtered`, or `full`), format,
+and a new path. The runner writes raw typed cells and reports progress and an
+export ID for cancellation. Full export includes the original execution SQL
+and connection snapshot; the automatic outer `LIMIT 500` and retention state
+are shown whenever they affect what is available.
 
 Rows are positional arrays and columns are ordered metadata objects, so
 duplicate labels remain lossless. Cells are null, text, or base64 binary cells;

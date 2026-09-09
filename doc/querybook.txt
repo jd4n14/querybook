@@ -16,8 +16,30 @@ COMMANDS                                                        *querybook-comma
     to explicitly allow a write blocked by the basic safety guard.
 
 :QuerybookInspect                                             *:QuerybookInspect*
-    Open the bounded retained result in a vertical scratch view. The view includes
-    the execution profile, driver, database, all rows, and full field values.
+    Open the retained result in a vertical scratch view. The view requests
+    handle based pages from the runner and includes execution SQL, profile,
+    driver, database, matching/source row positions, and full field values.
+
+:QuerybookFilter                                               *:QuerybookFilter*
+    Prompt for a JSONPath or shorthand expression and apply it to every retained
+    row. Invalid expressions leave the prior view unchanged. An empty expression
+    clears the filter.
+
+:QuerybookClearFilter                                     *:QuerybookClearFilter*
+    Clear the inspector filter and return to all retained rows.
+
+:QuerybookPinRow                                             *:QuerybookPinRow*
+    Pin the current source row, or unpin it when it is already pinned.
+
+:QuerybookCompareRows                                   *:QuerybookCompareRows*
+    Compare the current row with the pinned row using positional columns and
+    structural JSON comparison supplied by the runner.
+
+:QuerybookExportRetained                             *:QuerybookExportRetained*
+:QuerybookExportFiltered                             *:QuerybookExportFiltered*
+:QuerybookExportFull                                      *:QuerybookExportFull*
+    Prompt for a format and a new path, then export the explicitly selected
+    retained, filtered, or full scope. Progress is reported with an export ID.
 
 :QuerybookRefresh                                             *:QuerybookRefresh*
     Re-run the statement under the cursor with the active connection.
@@ -59,6 +81,10 @@ INSPECTOR                                                     *querybook-inspect
 
 In a QuerybookInspect scratch window, use these normal-mode mappings:
 
+    [r / ]r      Move to the previous or next matching row.
+    [p / ]p      Move to the previous or next matching page.
+    Enter / za   Expand or collapse the JSON node under the cursor lazily.
+    gR           Toggle raw/formatted display for the current field.
     yv          Copy the exact field value under the cursor. SQL NULL is copied
                 as the textual marker NULL; row and payload copies retain its
                 null type.
@@ -67,9 +93,11 @@ In a QuerybookInspect scratch window, use these normal-mode mappings:
     yp          Copy the complete result payload as ordered JSON.
     q           Close the inspector window.
 
-JSON-shaped field values are formatted for navigation in the inspector. Copy
-operations use the retained raw strings, so tabs, newlines, Unicode, decimals,
-and large integers are not rounded or clipped.
+JSON fields are expanded lazily only when their column metadata identifies a
+structured type. Copy operations use retained typed cells, so tabs, newlines,
+Unicode, decimals, and large integers are not rounded or clipped. A stale
+result continues to show its captured SQL and connection snapshot; a new
+successful execution creates a fresh handle and clears inspector state.
 
 CONFIGURATION                                                  *querybook-config*
 

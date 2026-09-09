@@ -1,6 +1,6 @@
 local M = {}
 local process, receive_buffer, next_request = nil, "", 0
-local pending, pending_admin, initialized = {}, {}, false
+local pending, pending_admin, pending_result, initialized = {}, {}, {}, false
 local max_line = 2 * 1024 * 1024
 local function encode(value) return vim.json.encode(value) .. "\n" end
 local function emit_error(item, message)
@@ -13,11 +13,26 @@ local function emit_admin_error(item, message)
   pending_admin[item.request_id] = nil
   item.callback(nil, message)
 end
+local function emit_result_error(item, message)
+  if not item or item.done then return end
+  item.done = true
+  pending_result[item.request_id] = nil
+  item.callback(nil, message)
+end
 local function dispatch(line)
   if #line > max_line then return end
   local ok, event = pcall(vim.json.decode, line)
   if not ok or type(event) ~= "table" or event.version ~= 1 or event.type == "ready" then return end
   if event.request_id and not event.execution_id and event.type ~= "connection" then
+    local result = pending_result[event.request_id]
+    if result and not result.done then
+      if event.type == "error" and event.terminal then
+        emit_result_error(result, "Querybook: " .. tostring(event.message or event.code or "result request failed"))
+      else
+        result.callback(event, nil, event)
+        if event.terminal then result.done = true; pending_result[event.request_id] = nil end
+      end
+    end
     local admin = pending_admin[event.request_id]
     if not admin or admin.done then return end
     if event.type == "error" and event.terminal then
@@ -69,6 +84,7 @@ local function on_exit(_, code)
   process = nil; local message = "Querybook: runner exited" .. (code and (" (code " .. code .. ")") or "")
   for _, item in pairs(pending) do emit_error(item, message) end; pending = {}
   for _, item in pairs(pending_admin) do emit_admin_error(item, message) end; pending_admin = {}
+  for _, item in pairs(pending_result) do emit_result_error(item, message) end; pending_result = {}
   receive_buffer = ""
 end
 local function plugin_root() return vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h") end
@@ -117,6 +133,25 @@ function M.connection(op, payload, callback)
   if not ok then emit_admin_error(item, "Querybook: runner input failed: " .. tostring(err)) end
   return { request_id = request_id, cancel = function() pending_admin[request_id] = nil end }
 end
+-- Send a result-registry operation.  Registry responses may be streamed (for
+-- example export progress), so callbacks receive every event until terminal.
+-- The request payload is intentionally generic: the Go runner owns the exact
+-- view/filter/cell/compare/export schema while Lua keeps only presentation
+-- state and opaque result handles.
+function M.result(op, payload, callback)
+  callback = callback or function() end
+  local config = M.config or {}
+  if not ensure_process(config) then callback(nil, "Querybook: runner unavailable"); return nil end
+  next_request = next_request + 1
+  local request_id = tostring(next_request)
+  local item = { request_id = request_id, callback = callback }
+  pending_result[request_id] = item
+  local request = { version = 1, type = "result", request_id = request_id, op = op, store_path = config.connection_store_path or config.store_path }
+  for key, value in pairs(payload or {}) do request[key] = value end
+  local ok, err = pcall(vim.fn.chansend, process, encode(request)); request = nil
+  if not ok then emit_result_error(item, "Querybook: runner input failed: " .. tostring(err)) end
+  return { request_id = request_id, cancel = function() pending_result[request_id] = nil end }
+end
 function M.cancel(execution_id)
   if pending[execution_id] and process then pcall(vim.fn.chansend, process, encode({ version = 1, type = "cancel", execution_id = execution_id })) end
 end
@@ -124,7 +159,8 @@ function M.shutdown()
   if process then pcall(vim.fn.chansend, process, encode({ version = 1, type = "shutdown" })); process = nil end
   for _, item in pairs(pending) do emit_error(item, "Querybook: runner stopped") end
   for _, item in pairs(pending_admin) do emit_admin_error(item, "Querybook: runner stopped") end
-  pending, pending_admin, receive_buffer = {}, {}, ""
+  for _, item in pairs(pending_result) do emit_result_error(item, "Querybook: runner stopped") end
+  pending, pending_admin, pending_result, receive_buffer = {}, {}, {}, ""
 end
 function M._reset() M.shutdown(); initialized = false end
 function M.setup(config)
