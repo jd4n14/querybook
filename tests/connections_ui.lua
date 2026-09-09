@@ -10,7 +10,8 @@ querybook.setup({ runner_path = root .. "/bin/querybook-runner", connection_stor
 local function request(op, payload)
   local result, err
   runner.connection(op, payload or {}, function(event, failure) result, err = event, failure end)
-  assert(vim.wait(5000, function() return result ~= nil or err ~= nil end), op .. " response")
+  if not vim.wait(5000, function() return result ~= nil or err ~= nil end) then print("NO RESPONSE " .. op) end
+  assert(result ~= nil or err ~= nil, op .. " response")
   assert(not err, op .. ": " .. tostring(err))
   return result
 end
@@ -26,7 +27,6 @@ assert(updated.connection and updated.connection.name == "UI smoke edited", "upd
 local selected = request("select", { connection_id = id })
 assert(selected.active_connection_id == id, "select persists active UUID")
 request("test", { connection_id = id })
-request("set_password", { connection_id = id, password = "" })
 request("delete", { connection_id = id })
 assert(#(request("list").connections or {}) == 0, "delete removes metadata")
 

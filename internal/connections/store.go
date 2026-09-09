@@ -305,15 +305,15 @@ func (s *Store) Resolve(id string) (protocol.Connection, []byte, error) {
 	if err != nil {
 		return protocol.Connection{}, nil, err
 	}
-	if s.credentials == nil {
-		return protocol.Connection{}, nil, errf("credential_store", "credential store unavailable")
-	}
 	if !c.HasPassword {
 		return c, nil, nil
 	}
+	if s.credentials == nil {
+		return protocol.Connection{}, nil, errf("credential_store", "credential store unavailable")
+	}
 	p, err := s.credentials.Get(id)
 	if errors.Is(err, credentials.ErrNotFound) {
-		return c, nil, nil
+		return protocol.Connection{}, nil, errf("credential_not_found", "credential not found")
 	}
 	if err != nil {
 		return protocol.Connection{}, nil, errf("credential_store", "could not read credential")

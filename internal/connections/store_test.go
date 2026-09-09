@@ -101,6 +101,10 @@ func TestCRUDPersistenceSelectionAndNoSecretSQLite(t *testing.T) {
 	if _, _, err := s.Resolve(mysql.ID); err != nil {
 		t.Fatal(err)
 	}
+	delete(f2.values, mysql.ID)
+	if _, _, err := s.Resolve(mysql.ID); err == nil || !strings.HasPrefix(err.Error(), "credential_not_found:") {
+		t.Fatalf("missing credential resolution=%v", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
