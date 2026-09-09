@@ -1,6 +1,12 @@
 :QuerybookClear	querybook.txt	/*:QuerybookClear*
 :QuerybookClear!	querybook.txt	/*:QuerybookClear!*
+:QuerybookConnections	querybook.txt	/*:QuerybookConnections*
+:QuerybookConnectionsImport	querybook.txt	/*:QuerybookConnectionsImport*
 :QuerybookInspect	querybook.txt	/*:QuerybookInspect*
+:QuerybookNextColumn	querybook.txt	/*:QuerybookNextColumn*
+:QuerybookNextPage	querybook.txt	/*:QuerybookNextPage*
+:QuerybookPrevColumn	querybook.txt	/*:QuerybookPrevColumn*
+:QuerybookPrevPage	querybook.txt	/*:QuerybookPrevPage*
 :QuerybookRefresh	querybook.txt	/*:QuerybookRefresh*
 :QuerybookRun	querybook.txt	/*:QuerybookRun*
 :QuerybookToggle	querybook.txt	/*:QuerybookToggle*

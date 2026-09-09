@@ -20,7 +20,7 @@ local columns_text=table.concat(vim.tbl_map(function(line)return line[1][1]end,c
 assert(columns_text:find("  │ c",1,true)); assert(not columns_text:find("  │ a",1,true))
 
 local db=vim.fn.tempname()..".sqlite3"
-local querybook=require("querybook"); querybook.setup({runner_path=root.."/bin/querybook-runner",connections={sqlite={driver="sqlite",path=db}},active_connection="sqlite",timeout_ms=5000})
+local querybook=require("querybook"); querybook.setup({runner_path=root.."/bin/querybook-runner",connection_store_path=vim.fn.tempname()..".connections.sqlite",connections={sqlite={driver="sqlite",path=db}},active_connection="sqlite",timeout_ms=5000})
 vim.cmd("enew"); vim.api.nvim_buf_set_lines(0,0,-1,false,{"CREATE TABLE sample(id INTEGER, name TEXT, data BLOB);","","SELECT 1 AS dup, 2 AS dup, id, name, data FROM sample;"})
 vim.api.nvim_win_set_cursor(0,{1,0}); querybook.run({force=true})
 local ns=vim.api.nvim_create_namespace("querybook")
@@ -28,7 +28,8 @@ local function texts()
   local out={}; for _,mark in ipairs(vim.api.nvim_buf_get_extmarks(0,ns,0,-1,{details=true})) do for _,line in ipairs(mark[4].virt_lines or {}) do out[#out+1]=line[1][1] end end; return table.concat(out,"\n")
 end
 local function done() return not texts():find("RUNNING",1,true) end
-assert(vim.wait(5000,done),"DDL completion")
+local function complete() return require("querybook.connections").active() ~= nil and done() end
+assert(vim.wait(5000,complete),"DDL completion")
 vim.api.nvim_buf_set_lines(0,0,1,false,{"INSERT INTO sample VALUES (1, 'alpha', x'0001ff');"}); vim.api.nvim_win_set_cursor(0,{1,0}); querybook.run({force=true}); assert(vim.wait(5000,done),"first insert")
 vim.api.nvim_buf_set_lines(0,0,1,false,{"INSERT INTO sample VALUES (2, 'NULL', x'');"}); vim.api.nvim_win_set_cursor(0,{1,0}); querybook.run({force=true}); assert(vim.wait(5000,done),"second insert")
 vim.api.nvim_buf_set_lines(0,0,-1,false,{"-- setup complete","","SELECT 1 AS dup, 2 AS dup, id, name, data FROM sample;"})

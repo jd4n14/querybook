@@ -1,16 +1,44 @@
 local M = {}
 local process, receive_buffer, next_request = nil, "", 0
-local pending, initialized = {}, false
+local pending, pending_admin, initialized = {}, {}, false
 local max_line = 2 * 1024 * 1024
 local function encode(value) return vim.json.encode(value) .. "\n" end
 local function emit_error(item, message)
   if not item or item.done then return end
   item.done = true; pending[item.execution_id] = nil; item.callback(nil, message)
 end
+local function emit_admin_error(item, message)
+  if not item or item.done then return end
+  item.done = true
+  pending_admin[item.request_id] = nil
+  item.callback(nil, message)
+end
 local function dispatch(line)
   if #line > max_line then return end
   local ok, event = pcall(vim.json.decode, line)
   if not ok or type(event) ~= "table" or event.version ~= 1 or event.type == "ready" then return end
+  if event.request_id and not event.execution_id and event.type ~= "connection" then
+    local admin = pending_admin[event.request_id]
+    if not admin or admin.done then return end
+    if event.type == "error" and event.terminal then
+      emit_admin_error(admin, "Querybook: " .. tostring(event.message or event.code or "request failed"))
+    end
+    return
+  end
+  if event.type == "connection" then
+    local item = pending_admin[event.request_id]
+    if not item or item.done or event.op ~= item.op then return end
+    if event.terminal then
+      item.done = true
+      pending_admin[event.request_id] = nil
+      if event.code and event.code ~= "" then
+        item.callback(nil, "Querybook: " .. tostring(event.message or event.code), event)
+      else
+        item.callback(event, nil, event)
+      end
+    end
+    return
+  end
   local item = pending[event.execution_id]
   if not item or item.done or event.generation ~= item.generation then return end
   local result_set = event.result_set or 0
@@ -39,7 +67,9 @@ local function on_stdout(_, data)
 end
 local function on_exit(_, code)
   process = nil; local message = "Querybook: runner exited" .. (code and (" (code " .. code .. ")") or "")
-  for _, item in pairs(pending) do emit_error(item, message) end; pending = {}; receive_buffer = ""
+  for _, item in pairs(pending) do emit_error(item, message) end; pending = {}
+  for _, item in pairs(pending_admin) do emit_admin_error(item, message) end; pending_admin = {}
+  receive_buffer = ""
 end
 local function plugin_root() return vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h") end
 local function executable(config)
@@ -50,7 +80,12 @@ end
 local function ensure_process(config)
   if process and process > 0 then return true end
   local path = executable(config); if not path then vim.notify("Querybook: querybook-runner is missing; run `make build` in the plugin directory", vim.log.levels.ERROR); return false end
-  process = vim.fn.jobstart({ path }, { rpc = false, stdin = "pipe", stdout = "pipe", stderr = "pipe", on_stdout = on_stdout, on_exit = on_exit })
+  -- Keep legacy credential variables out of the child environment. Managed
+  -- connections obtain secrets through the private request path only.
+  local env = vim.fn.environ()
+  env.MYSQL_PWD = nil
+  env.QUERYBOOK_MYSQL_PASSWORD = nil
+  process = vim.fn.jobstart({ path }, { rpc = false, clear_env = true, stdin = "pipe", stdout = "pipe", stderr = "pipe", env = env, on_stdout = on_stdout, on_exit = on_exit })
   if process <= 0 then process = nil; vim.notify("Querybook: could not start querybook-runner", vim.log.levels.ERROR); return false end; return true
 end
 function M.run(connection, sql, opts, callback)
@@ -59,16 +94,37 @@ function M.run(connection, sql, opts, callback)
   if not ensure_process(M.config or {}) then callback(nil, "Querybook: runner unavailable"); return nil end
   next_request = next_request + 1; local execution_id = tostring(next_request) .. "-" .. tostring(vim.loop.hrtime()); local generation = opts.generation or next_request
   local item = { execution_id = execution_id, generation = generation, callback = callback, data = { rows = {}, columns = {} } }; pending[execution_id] = item
-  local request = { version = 1, type = "execute", request_id = tostring(next_request), execution_id = execution_id, generation = generation, connection = connection, sql = sql, force = opts.force == true, timeout_ms = opts.timeout_ms or config.timeout_ms, max_retained_rows = opts.max_retained_rows or config.max_retained_rows, max_retained_bytes = opts.max_retained_bytes or config.max_retained_bytes, batch_rows = opts.batch_rows or config.batch_rows, batch_bytes = opts.batch_bytes or config.batch_bytes }
+  local request = { version = 1, type = "execute", request_id = tostring(next_request), execution_id = execution_id, generation = generation, connection_id = connection, store_path = config.connection_store_path or config.store_path, sql = sql, force = opts.force == true, timeout_ms = opts.timeout_ms or config.timeout_ms, max_retained_rows = opts.max_retained_rows or config.max_retained_rows, max_retained_bytes = opts.max_retained_bytes or config.max_retained_bytes, batch_rows = opts.batch_rows or config.batch_rows, batch_bytes = opts.batch_bytes or config.batch_bytes }
   local ok, err = pcall(vim.fn.chansend, process, encode(request)); if not ok then emit_error(item, "Querybook: runner input failed: " .. tostring(err)) end
   return { execution_id = execution_id, generation = generation, cancel = function() M.cancel(execution_id) end }
+end
+-- Send a non-execution request to the managed connection store. The pending
+-- entry contains only request correlation data and the callback. In
+-- particular, it never retains the request table or a password-bearing
+-- payload after chansend returns.
+function M.connection(op, payload, callback)
+  callback = callback or function() end
+  local config = M.config or {}
+  if not ensure_process(config) then callback(nil, "Querybook: runner unavailable"); return nil end
+  next_request = next_request + 1
+  local request_id = tostring(next_request)
+  local item = { request_id = request_id, op = op, callback = callback }
+  pending_admin[request_id] = item
+  local request = { version = 1, type = "connection", request_id = request_id, op = op, store_path = config.connection_store_path or config.store_path }
+  for key, value in pairs(payload or {}) do request[key] = value end
+  local ok, err = pcall(vim.fn.chansend, process, encode(request))
+  request = nil
+  if not ok then emit_admin_error(item, "Querybook: runner input failed: " .. tostring(err)) end
+  return { request_id = request_id, cancel = function() pending_admin[request_id] = nil end }
 end
 function M.cancel(execution_id)
   if pending[execution_id] and process then pcall(vim.fn.chansend, process, encode({ version = 1, type = "cancel", execution_id = execution_id })) end
 end
 function M.shutdown()
   if process then pcall(vim.fn.chansend, process, encode({ version = 1, type = "shutdown" })); process = nil end
-  for _, item in pairs(pending) do emit_error(item, "Querybook: runner stopped") end; pending = {}; receive_buffer = ""
+  for _, item in pairs(pending) do emit_error(item, "Querybook: runner stopped") end
+  for _, item in pairs(pending_admin) do emit_admin_error(item, "Querybook: runner stopped") end
+  pending, pending_admin, receive_buffer = {}, {}, ""
 end
 function M._reset() M.shutdown(); initialized = false end
 function M.setup(config)

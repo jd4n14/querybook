@@ -37,24 +37,17 @@ With `lazy.nvim`:
 {
   dir = "/path/to/querybook",
   config = function()
-    require("querybook").setup({
-      connections = {
-        sqlite = { driver = "sqlite", path = vim.fn.stdpath("data") .. "/querybook.sqlite3" },
-        local_mysql = {
-          driver = "mysql",
-          host = "127.0.0.1",
-          port = 3306,
-          user = "root",
-          database = "app_development",
-          -- charset = "utf8mb4", -- default for reliable Unicode values
-          -- password = "...", -- sent only to the child over stdin
-        },
-      },
-      active_connection = "sqlite",
-    })
+    require("querybook").setup({})
   end,
 }
 ```
+
+Use `:QuerybookConnections` or normal-mode `qC` to manage saved connections.
+The rounded native list supports Enter (select), `a` (add), `e` (edit
+metadata), `p` (change password), `d` (delete with confirmation), `t` (test),
+and `q` (close). Passwords are captured only by the hidden input prompt for
+create or password changes. They are never editable buffer fields or stored in
+Lua configuration. `qc` remains the existing clear mapping.
 
 The plugin also installs defaults when no configuration is supplied. The
 following commands are available:
@@ -71,6 +64,8 @@ following commands are available:
 :QuerybookPrevPage  " show the previous retained row page
 :QuerybookNextColumn " show the next retained column page
 :QuerybookPrevColumn " show the previous retained column page
+:QuerybookConnections " open saved connection manager
+:QuerybookConnectionsImport name " explicitly import metadata from an old config profile
 ```
 
 Select lines in visual mode before `:QuerybookRun` to execute that selection;
@@ -84,15 +79,16 @@ remain in the notebook stay independently anchored.
 
 ## Connection configuration
 
-`active_connection` names an entry in `connections`. Each entry has a
-`driver`, either `sqlite` or `mysql`.
-
-SQLite accepts `path` (use `:memory:` only for one process invocation; a file
-is better for repeated notebook executions). MySQL accepts `host`, `port`,
-`socket`, `user`, `database`, and optional `password`. The password is sent
-only in the private JSON request on the child stdin and is never put in argv,
-output, or logs. Set `runner_path` for a custom installation; otherwise run
-`make build` to create `bin/querybook-runner`.
+Connections are persisted by the Go runner and selected by managed UUID. The
+metadata form accepts `name`, `driver`, `host`, `port`, `database`, `username`,
+`socket`, `path`, and `charset`; SQLite requires `path`, while MySQL uses its
+host/socket, port, username, and database fields. Set `runner_path` for a
+custom installation; otherwise run `make build` to create
+`bin/querybook-runner`. Existing inline profiles can be imported as metadata
+from the manager when the user requests it; passwords are never read from
+those profiles or from environment variables.
+Set `connection_store_path` only when an isolated metadata SQLite file is
+needed for tests or a deliberately separate local profile store.
 
 ## Current boundary
 

@@ -2,13 +2,14 @@ local parser = require("querybook.parser")
 local render = require("querybook.render")
 local risk = require("querybook.risk")
 local runner = require("querybook.runner")
+local connections = require("querybook.connections")
 
 local M = {}
 local ns = vim.api.nvim_create_namespace("querybook")
 local state = {}
 local defaults = {
-  active_connection = "sqlite",
-  connections = { sqlite = { driver = "sqlite", path = vim.fn.stdpath("data") .. "/querybook.sqlite3" } },
+  active_connection = nil,
+  connections = {},
 	preview_rows = 10,
   max_columns = 12,
   max_value_length = 128,
@@ -104,10 +105,6 @@ end
 remove_result = function(bufnr, result)
   if result.extmark then pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, result.extmark) end
   buffer_state(bufnr).results[result.id] = nil
-end
-
-local function connection()
-  return M.config.connections[M.config.active_connection], M.config.active_connection
 end
 
 local function json_string(value)
@@ -238,9 +235,11 @@ function M.run(opts)
       return vim.notify("Querybook blocked: " .. table.concat(analysis.reasons, "; ") .. " (use :QuerybookRun! or allow_writes)", vim.log.levels.WARN)
     end
   end
+  local function execute_queries(conn)
   runner.setup(M.config)
-  local conn, name = connection()
-  if not conn then return vim.notify("Querybook: unknown connection " .. tostring(M.config.active_connection), vim.log.levels.ERROR) end
+  local name = conn.connection_id or conn.id
+  local display_name = conn.name or name
+  if not name then return vim.notify("Querybook: active connection has no id", vim.log.levels.ERROR) end
 	local bs = buffer_state(bufnr)
 	if not vim.b[bufnr].querybook_viewport_maps then
 		vim.keymap.set("n", "<leader>qN", "<Cmd>QuerybookNextPage<CR>", { buffer = bufnr, silent = true, desc = "Querybook: next result page" })
@@ -263,7 +262,7 @@ function M.run(opts)
 			result.generation = (result.generation or 0) + 1
 			result.query, result.status, result.error = item.query, "running", nil
 			result.previous_query = nil
-			result.connection_name, result.connection_profile, result.connection_driver = name, name, conn.driver
+			result.connection_name, result.connection_profile, result.connection_driver = display_name, display_name, conn.driver
 			result.database, result.duration_ms = conn.database or conn.path, 0
 			result.auto_limit_applied, result.auto_limit_reason, result.truncated, result.truncation_reason = nil, nil, false, nil
 			result.row_offset, result.column_offset = 0, 0
@@ -271,7 +270,7 @@ function M.run(opts)
 			bs.next_id = bs.next_id + 1
 			result = {
 				id = bs.next_id, query = item.query, status = "running", rows = {}, columns = {}, generation = 1,
-				connection_name = name, connection_profile = name, connection_driver = conn.driver,
+				connection_name = display_name, connection_profile = display_name, connection_driver = conn.driver,
 				database = conn.database or conn.path, duration_ms = 0, row_offset = 0, column_offset = 0,
 			}
 			result.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, item.anchor - 1, 0, { right_gravity = false, virt_lines = render.lines(result, M.config), virt_lines_above = false, virt_lines_leftcol = true })
@@ -280,7 +279,7 @@ function M.run(opts)
 		render_result(bufnr, result)
 		local started = vim.loop.hrtime()
 		local run_generation = result.generation
-		result.handle = runner.run(conn, item.query, { force = (opts and opts.force) or M.config.allow_writes, generation = run_generation }, function(data, err)
+		result.handle = runner.run(name, item.query, { force = (opts and opts.force) or M.config.allow_writes, generation = run_generation }, function(data, err)
 			if result.generation ~= run_generation or bs.results[result.id] ~= result then return end
 			result.duration_ms = math.floor((vim.loop.hrtime() - started) / 1000000)
 			result.handle = nil
@@ -290,6 +289,15 @@ function M.run(opts)
 				result.truncated, result.truncation_reason = previous_truncated or false, previous_truncation_reason
 			else
 				result.status, result.rows, result.columns = "success", data.rows or {}, data.columns or {}
+				-- The runner may attach the authoritative execution snapshot. Keep
+				-- that metadata with this result even if the manager selection changes.
+				local snapshot = data.connection or data.connection_metadata
+				if type(snapshot) == "table" then
+					result.connection_name = snapshot.name or result.connection_name
+					result.connection_profile = result.connection_name
+					result.connection_driver = snapshot.driver or result.connection_driver
+					result.database = snapshot.database or snapshot.path or result.database
+				end
 				result.previous_query = nil
 				result.last_successful_query = item.query
 				result.auto_limit_applied, result.auto_limit_reason = data.auto_limit_applied, data.auto_limit_reason
@@ -299,6 +307,15 @@ function M.run(opts)
     end)
   end
   for _, item in ipairs(queries) do execute_one(item) end
+  end
+  local active = connections.active()
+  if active then execute_queries(active)
+  else
+    connections.ensure_active(function(conn, err)
+      if not conn then return vim.notify(err or "Querybook: no active connection", vim.log.levels.ERROR) end
+      execute_queries(conn)
+    end)
+  end
 end
 
 function M.page(axis, direction)
@@ -384,7 +401,7 @@ function M.setup(opts)
 	-- max_rows was the old preview setting. Honor it when callers have not
 	-- opted into the clearer preview_rows name.
 	if opts and opts.preview_rows == nil and opts.max_rows ~= nil then M.config.preview_rows = opts.max_rows end
-  runner.setup(M.config)
+  connections.setup(M.config)
   render.setup_highlights()
   if not M._commands_created then
     vim.api.nvim_create_user_command("QuerybookRun", function(command_opts) M.run({ range = command_opts.range, line1 = command_opts.line1, line2 = command_opts.line2, force = command_opts.bang }) end, { range = true, bang = true, desc = "Run SQL under cursor or visual selection" })
@@ -396,6 +413,11 @@ function M.setup(opts)
 		vim.api.nvim_create_user_command("QuerybookPrevColumn", M.prev_column, { desc = "Show previous retained Querybook columns" })
     vim.api.nvim_create_user_command("QuerybookRefresh", M.refresh, { desc = "Re-run Querybook result" })
     vim.api.nvim_create_user_command("QuerybookClear", function(command_opts) M.clear(command_opts.bang) end, { bang = true, desc = "Clear Querybook result" })
+    vim.api.nvim_create_user_command("QuerybookConnections", connections.open, { desc = "Manage Querybook connections" })
+    vim.api.nvim_create_user_command("QuerybookConnectionsImport", function(command_opts) connections.import_legacy(command_opts.args) end, { nargs = 1, desc = "Import connection metadata from config" })
+    -- qC opens the manager; qc remains the established clear mapping.
+    vim.keymap.set("n", "qC", "<Cmd>QuerybookConnections<CR>", { silent = true, desc = "Querybook: manage connections" })
+    vim.keymap.set("n", "qc", "<Cmd>QuerybookClear<CR>", { silent = true, desc = "Querybook: clear result" })
     M._commands_created = true
   end
   local group = vim.api.nvim_create_augroup("Querybook", { clear = true })
