@@ -30,6 +30,12 @@ type rowPath struct {
 	name  string
 	index int
 	pos   bool
+	parts []pathPart
+}
+
+type pathPart struct {
+	name  string
+	index *int
 }
 
 func compilePredicate(source string) (predicate, error) {
@@ -43,7 +49,7 @@ func compilePredicate(source string) (predicate, error) {
 	if strings.HasPrefix(s, "$") {
 		return predicate{}, errors.New("result: JSONPath must select retained rows with a filter")
 	}
-	if !strings.HasPrefix(s, "@") {
+	if !strings.HasPrefix(s, "@") && !strings.HasPrefix(s, "(") {
 		if strings.HasPrefix(s, ".") {
 			s = "@" + s
 		} else {
@@ -137,7 +143,26 @@ func (o operand) value(meta Metadata, row []protocol.Cell) (any, bool) {
 	if idx < 0 || idx >= len(row) {
 		return nil, false
 	}
-	return jsonValue(meta, idx, row[idx]), true
+	value := jsonValue(meta, idx, row[idx])
+	for _, part := range o.path.parts {
+		if part.index != nil {
+			array, ok := value.([]any)
+			if !ok || *part.index < 0 || *part.index >= len(array) {
+				return nil, false
+			}
+			value = array[*part.index]
+			continue
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		value, ok = object[part.name]
+		if !ok {
+			return nil, false
+		}
+	}
+	return value, true
 }
 
 func compareValues(a, b any, op string) bool {
@@ -267,15 +292,21 @@ func (p *parser) parseAnd() (predicate, error) {
 	if err != nil {
 		return predicate{}, err
 	}
-	ands := append([]comparison(nil), first.ors[0]...)
+	ands := append([][]comparison(nil), first.ors...)
 	for p.take("&&") {
 		next, err := p.parsePrimary()
 		if err != nil {
 			return predicate{}, err
 		}
-		ands = append(ands, next.ors[0]...)
+		combined := make([][]comparison, 0, len(ands)*len(next.ors))
+		for _, left := range ands {
+			for _, right := range next.ors {
+				combined = append(combined, append(append([]comparison(nil), left...), right...))
+			}
+		}
+		ands = combined
 	}
-	return predicate{ors: [][]comparison{ands}}, nil
+	return predicate{ors: ands}, nil
 }
 
 func (p *parser) parsePrimary() (predicate, error) {
@@ -402,7 +433,8 @@ func (p *parser) parsePath() (*rowPath, error) {
 			p.i++
 			return &rowPath{pos: true, index: idx}, nil
 		}
-		return &rowPath{name: name}, nil
+		path := &rowPath{name: name}
+		return p.parsePathTail(path)
 	}
 	start := p.i
 	for !p.eof() && (unicode.IsLetter(rune(p.s[p.i])) || unicode.IsDigit(rune(p.s[p.i])) || p.s[p.i] == '_' || p.s[p.i] == '-') {
@@ -411,5 +443,39 @@ func (p *parser) parsePath() (*rowPath, error) {
 	if start == p.i {
 		return nil, errors.New("invalid JSONPath member")
 	}
-	return &rowPath{name: p.s[start:p.i]}, nil
+	path := &rowPath{name: p.s[start:p.i]}
+	return p.parsePathTail(path)
+}
+
+func (p *parser) parsePathTail(path *rowPath) (*rowPath, error) {
+	for {
+		p.skipSpace()
+		if p.eof() || p.s[p.i] != '.' {
+			if !p.eof() && p.s[p.i] == '[' {
+				p.i++
+				start := p.i
+				for !p.eof() && p.s[p.i] >= '0' && p.s[p.i] <= '9' {
+					p.i++
+				}
+				if start == p.i || p.eof() || p.s[p.i] != ']' {
+					return nil, errors.New("invalid JSONPath array index")
+				}
+				idx, _ := strconv.Atoi(p.s[start:p.i])
+				p.i++
+				path.parts = append(path.parts, pathPart{index: &idx})
+				continue
+			}
+			break
+		}
+		p.i++
+		start := p.i
+		for !p.eof() && (unicode.IsLetter(rune(p.s[p.i])) || unicode.IsDigit(rune(p.s[p.i])) || p.s[p.i] == '_' || p.s[p.i] == '-') {
+			p.i++
+		}
+		if start == p.i {
+			return nil, errors.New("invalid JSONPath member")
+		}
+		path.parts = append(path.parts, pathPart{name: p.s[start:p.i]})
+	}
+	return path, nil
 }

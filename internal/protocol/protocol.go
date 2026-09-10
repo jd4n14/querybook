@@ -57,6 +57,9 @@ type Request struct {
 	Format           string     `json:"format,omitempty"`
 	Path             string     `json:"path,omitempty"`
 	ExportID         string     `json:"export_id,omitempty"`
+	JSONPath         string     `json:"json_path,omitempty"`
+	TreeDepth        int        `json:"tree_depth,omitempty"`
+	TreeBytes        int64      `json:"tree_bytes,omitempty"`
 }
 
 type Connection struct {
@@ -146,6 +149,7 @@ type Event struct {
 	CurrentRow         int                `json:"current_row,omitempty"`
 	Cell               *Cell              `json:"cell,omitempty"`
 	Column             *Column            `json:"column,omitempty"`
+	Tree               *JSONTreeNode      `json:"tree,omitempty"`
 	Metadata           *ResultMetadata    `json:"metadata,omitempty"`
 	Pinned             bool               `json:"pinned,omitempty"`
 	Changes            []ResultDifference `json:"changes,omitempty"`
@@ -165,6 +169,17 @@ type ResultDifference struct {
 	Kind       string `json:"kind"`
 	Before     *Cell  `json:"before,omitempty"`
 	After      *Cell  `json:"after,omitempty"`
+}
+
+type JSONTreeNode struct {
+	Type     string          `json:"type"`
+	Raw      string          `json:"raw"`
+	Children []JSONTreeEntry `json:"children,omitempty"`
+}
+
+type JSONTreeEntry struct {
+	Key  *JSONTreeNode `json:"key,omitempty"`
+	Node JSONTreeNode  `json:"node"`
 }
 
 func (r Request) Validate() error {
@@ -222,7 +237,7 @@ func (r Request) Validate() error {
 			return errors.New("missing request_id")
 		}
 		switch r.Op {
-		case "page", "view", "cell", "filter", "filter_clear", "compare", "release", "pin", "unpin", "payload", "export", "export_cancel":
+		case "page", "view", "cell", "tree", "filter", "filter_clear", "compare", "release", "pin", "unpin", "payload", "export", "export_cancel":
 		default:
 			return errors.New("unknown result operation")
 		}
@@ -232,7 +247,7 @@ func (r Request) Validate() error {
 		if (r.Op == "page" || r.Op == "view") && (r.Offset < 0 || r.Limit < 0 || r.Page < 0 || r.PageSize < 0) {
 			return errors.New("invalid result page")
 		}
-		if r.Op == "cell" && (r.Row < 0 || r.Column < 0) {
+		if (r.Op == "cell" || r.Op == "tree") && (r.Row < 0 || r.Column < 0) {
 			return errors.New("invalid result cell")
 		}
 		if r.Op == "filter" && r.Filter == "" && r.Expression == "" {

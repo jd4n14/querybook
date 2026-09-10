@@ -31,6 +31,7 @@ type runner struct {
 	results     *results.Registry
 	exports     map[string]context.CancelFunc
 	exportOwner map[string]string
+	exportWG    sync.WaitGroup
 }
 
 func (r *runner) send(e protocol.Event) error {
@@ -281,7 +282,7 @@ func (r *runner) result(req protocol.Request) {
 			indices[i] = i
 		}
 		event.TotalRows, event.Pinned, event.Metadata, event.MatchingIndices, event.SourceRows, event.SourceIndices, event.Valid = int64(len(indices)), snap.Pinned, resultProtocolMetadata(snap.Meta), indices, indices, indices, true
-	case "cell":
+	case "cell", "tree":
 		columnIndex := req.Column
 		if req.ColumnName != "" {
 			snap, getErr := r.results.Get(req.Handle)
@@ -301,7 +302,10 @@ func (r *runner) result(req protocol.Request) {
 			r.err(req, "result", err.Error())
 			return
 		}
-		event.Cell, event.Column = &cell, &column
+		if req.Op == "cell" {
+			event.Cell, event.Column = &cell, &column
+		}
+		event.Tree = results.CellTreeAt(cell, req.JSONPath, req.TreeDepth, req.TreeBytes)
 	case "compare":
 		sourceRow, currentRow := req.SourceRow, req.CurrentRow
 		if req.LeftSourceIndex != 0 || req.RightSourceIndex != 0 {
@@ -328,8 +332,9 @@ func (r *runner) result(req protocol.Request) {
 	case "export_cancel":
 		r.mu.Lock()
 		cancel := r.exports[req.ExportID]
+		owner := r.exportOwner[req.ExportID]
 		r.mu.Unlock()
-		if cancel == nil {
+		if cancel == nil || owner != req.Handle {
 			r.err(req, "export", "export is not running")
 			return
 		}
@@ -378,7 +383,23 @@ func (r *runner) startExport(req protocol.Request) error {
 	if req.Path == "" {
 		return errors.New("missing destination")
 	}
-	snap, err := r.results.Get(req.Handle)
+	switch req.Scope {
+	case "retained", "filtered", "full":
+	default:
+		return errors.New("invalid export scope")
+	}
+	if req.Scope == "filtered" && req.ViewID == "" && req.Filter == "" && req.Expression == "" {
+		return errors.New("filtered export requires a view or filter")
+	}
+	var snap results.Snapshot
+	var meta results.Metadata
+	var err error
+	if req.Scope == "full" {
+		meta, err = r.results.Metadata(req.Handle)
+	} else {
+		snap, err = r.results.Get(req.Handle)
+		meta = snap.Meta
+	}
 	if err != nil {
 		return err
 	}
@@ -395,12 +416,24 @@ func (r *runner) startExport(req protocol.Request) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("runner is shutting down")
+	}
 	if r.exports == nil {
 		r.exports, r.exportOwner = make(map[string]context.CancelFunc), make(map[string]string)
 	}
+	if _, exists := r.exports[exportID]; exists {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("export ID is already running")
+	}
 	r.exports[exportID], r.exportOwner[exportID] = cancel, req.Handle
+	r.exportWG.Add(1)
 	r.mu.Unlock()
 	go func() {
+		defer r.exportWG.Done()
 		defer func() {
 			r.mu.Lock()
 			delete(r.exports, exportID)
@@ -417,16 +450,16 @@ func (r *runner) startExport(req protocol.Request) error {
 			if storeErr != nil {
 				exportErr = storeErr
 			} else {
-				if snap.Meta.ConnectionID != "" {
-					current, getErr := store.Get(snap.Meta.ConnectionID)
+				if meta.ConnectionID != "" {
+					current, getErr := store.Get(meta.ConnectionID)
 					if getErr != nil {
 						exportErr = errors.New("connection metadata was deleted")
-					} else if !sameConnection(snap.Meta.Connection, current) {
+					} else if !sameConnection(meta.Connection, current) {
 						exportErr = errors.New("connection metadata changed since execution")
 					}
 				}
 				if exportErr == nil {
-					streamReq := protocol.Request{Version: 1, Type: "execute", RequestID: req.RequestID, ExecutionID: exportID, ConnectionID: snap.Meta.ConnectionID, Connection: snap.Meta.Connection, SQL: snap.Meta.OriginalSQL}
+					streamReq := protocol.Request{Version: 1, Type: "execute", RequestID: req.RequestID, ExecutionID: exportID, ConnectionID: meta.ConnectionID, Connection: meta.Connection, SQL: meta.OriginalSQL}
 					_, exportErr = export.ExportStream(ctx, req.Path, opts, func(cb export.StreamCallbacks) error {
 						_, streamErr := executor.Stream(ctx, streamReq, store.Resolve, executor.StreamSink{
 							OnSchema: func(set int, columns []protocol.Column) error { return cb.Schema(columns) },
@@ -436,9 +469,9 @@ func (r *runner) startExport(req protocol.Request) error {
 					})
 				}
 			}
-		} else {
+		} else if req.Scope == "retained" || req.Scope == "filtered" {
 			rows := snap.Rows
-			if req.Filter != "" || req.Expression != "" {
+			if req.Scope == "filtered" && (req.Filter != "" || req.Expression != "") {
 				expression := req.Filter
 				if expression == "" {
 					expression = req.Expression
@@ -454,7 +487,7 @@ func (r *runner) startExport(req protocol.Request) error {
 						rows = filtered.Rows
 					}
 				}
-			} else if req.ViewID != "" {
+			} else if req.Scope == "filtered" && req.ViewID != "" {
 				view, _, pageErr := r.results.PageView(req.Handle, req.ViewID, 0, int(^uint(0)>>1))
 				if pageErr != nil {
 					exportErr = pageErr
@@ -463,8 +496,10 @@ func (r *runner) startExport(req protocol.Request) error {
 				}
 			}
 			if exportErr == nil {
-				stats, exportErr = export.ExportCurrent(ctx, req.Path, snap.Meta.Columns, rows, opts)
+				stats, exportErr = export.ExportCurrent(ctx, req.Path, meta.Columns, rows, opts)
 			}
+		} else {
+			exportErr = errors.New("invalid export scope")
 		}
 		if exportErr != nil {
 			_ = r.send(protocol.Event{Version: 1, Type: "error", RequestID: req.RequestID, Op: "export", ExportID: exportID, Code: "export", Message: exportErr.Error(), Terminal: true})
@@ -525,8 +560,13 @@ func (r *runner) shutdown() {
 		c()
 	}
 	r.mu.Unlock()
+	done := make(chan struct{})
+	go func() { r.exportWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
 	if r.store != nil {
 		_ = r.store.Close()
 	}
-	time.Sleep(5 * time.Millisecond)
 }

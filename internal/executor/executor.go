@@ -138,7 +138,7 @@ func cellFrom(v any, typ string) protocol.Cell {
 func utf8Valid(v []byte) bool { return utf8.Valid(v) }
 func isBinaryType(t string) bool {
 	t = strings.ToLower(t)
-	for _, x := range []string{"blob", "binary", "varbinary", "longblob", "mediumblob", "tinyblob"} {
+	for _, x := range []string{"blob", "binary", "varbinary", "longblob", "mediumblob", "tinyblob", "bit"} {
 		if strings.Contains(t, x) {
 			return true
 		}

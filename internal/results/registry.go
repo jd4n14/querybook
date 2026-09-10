@@ -189,6 +189,18 @@ func (r *Registry) Get(handle string) (Snapshot, error) {
 	return snapshotOf(handle, e), nil
 }
 
+// Metadata returns only the frozen execution metadata, avoiding a full row
+// copy for streaming operations such as full export.
+func (r *Registry) Metadata(handle string) (Metadata, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, err := r.getLocked(handle)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return cloneMeta(e.meta), nil
+}
+
 // Page returns rows in source order and their source ordinals. Offset and
 // limit are checked without allocating a result-sized temporary slice.
 func (r *Registry) Page(handle string, offset, limit int) (Snapshot, []int, error) {
@@ -208,7 +220,7 @@ func (r *Registry) Page(handle string, offset, limit int) (Snapshot, []int, erro
 	if end < offset || end > len(e.rows) {
 		end = len(e.rows)
 	}
-	view := snapshotOf(handle, e)
+	view := Snapshot{Handle: handle, Meta: cloneMeta(e.meta), Pinned: e.pinned, Bytes: e.bytes, TotalRows: len(e.rows)}
 	view.Rows = cloneRows(e.rows[offset:end])
 	ordinals := make([]int, end-offset)
 	for i := range ordinals {
@@ -247,9 +259,8 @@ func (r *Registry) PageView(handle, viewID string, offset, limit int) (Snapshot,
 	if end < offset || end > len(ordinals) {
 		end = len(ordinals)
 	}
-	view := snapshotOf(handle, e)
+	view := Snapshot{Handle: handle, Meta: cloneMeta(e.meta), Pinned: e.pinned, Bytes: e.bytes, TotalRows: len(ordinals)}
 	view.Rows = make([][]protocol.Cell, end-offset)
-	view.TotalRows = len(ordinals)
 	selected := make([]int, end-offset)
 	for i, source := range ordinals[offset:end] {
 		view.Rows[i] = cloneRows(e.rows[source : source+1])[0]
@@ -330,6 +341,14 @@ func jsonValue(meta Metadata, index int, c protocol.Cell) any {
 			return exactNumber{raw: c.Text}
 		}
 	}
+	if index < len(meta.Columns) && isJSONDocumentType(meta.Columns[index].DatabaseType) {
+		var decoded any
+		dec := json.NewDecoder(strings.NewReader(c.Text))
+		dec.UseNumber()
+		if dec.Decode(&decoded) == nil {
+			return decoded
+		}
+	}
 	if index < len(meta.Columns) && isJSONBoolType(meta.Columns[index].DatabaseType) {
 		switch c.Text {
 		case "0", "false", "FALSE":
@@ -363,7 +382,12 @@ func isJSONNumericType(typ string) bool {
 
 func isJSONBoolType(typ string) bool {
 	t := strings.ToLower(typ)
-	return strings.Contains(t, "bool") || t == "bit" || strings.HasPrefix(t, "bit(")
+	return strings.Contains(t, "bool")
+}
+
+func isJSONDocumentType(typ string) bool {
+	t := strings.ToLower(typ)
+	return strings.Contains(t, "json") || strings.Contains(t, "struct")
 }
 
 // JSONNumber is exposed for tests and future filters that need to inspect a

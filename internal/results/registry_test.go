@@ -159,6 +159,32 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	}
 }
 
+func TestNestedJSONPathAndGroupedPredicates(t *testing.T) {
+	r := New(Options{MaxBytes: 1 << 20, MaxSets: 1})
+	m := Metadata{Columns: []protocol.Column{{Name: "client_id", DatabaseType: "INTEGER"}, {Name: "data", DatabaseType: "JSON"}, {Name: "invoice_id", DatabaseType: "INTEGER"}}}
+	rows := [][]protocol.Cell{
+		{protocol.TextCell("1749"), protocol.TextCell(`{"weight":0.5,"state":"ready"}`), protocol.NullCell()},
+		{protocol.TextCell("1749"), protocol.TextCell(`{"weight":0.2,"state":"ready"}`), protocol.NullCell()},
+		{protocol.TextCell("1748"), protocol.TextCell(`{"weight":0.9,"state":"ready"}`), protocol.NullCell()},
+	}
+	id, err := r.Retain(m, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, count, err := r.Filter(id, "@.client_id == 1749 && @.data.weight > 0.4 && @.invoice_id == null")
+	if err != nil || count != 1 {
+		t.Fatalf("nested filter view=%s count=%d err=%v", view, count, err)
+	}
+	_, ordinals, _ := r.PageView(id, view, 0, 10)
+	if len(ordinals) != 1 || ordinals[0] != 0 {
+		t.Fatalf("nested ordinals=%#v", ordinals)
+	}
+	view, count, err = r.Filter(id, "$[?((@.client_id == 1749 || @.client_id == 1748) && @.data.weight > 0.8)]")
+	if err != nil || count != 1 {
+		t.Fatalf("grouped filter view=%s count=%d err=%v", view, count, err)
+	}
+}
+
 func TestFailedFilterLeavesExistingView(t *testing.T) {
 	r := New(Options{MaxBytes: 1 << 20, MaxSets: 1})
 	m := testMeta()
@@ -198,5 +224,32 @@ func TestCompareRowsUsesExactJSONAndKeepsRawCells(t *testing.T) {
 		if change.Before == nil || change.After == nil {
 			t.Fatal("raw cells omitted")
 		}
+	}
+}
+
+func TestCellTreePreservesLargeNumberLexeme(t *testing.T) {
+	tree := CellTree(protocol.TextCell(`{"n":900719925474099312345,"empty":"","zero":0,"false":false}`))
+	if tree == nil || tree.Type != "object" || len(tree.Children) != 4 {
+		t.Fatalf("tree=%#v", tree)
+	}
+	found := false
+	for _, child := range tree.Children {
+		if child.Key != nil && child.Key.Raw == `"n"` {
+			found = child.Node.Type == "number" && child.Node.Raw == "900719925474099312345"
+		}
+	}
+	if !found {
+		t.Fatalf("large number lexeme was normalized: %#v", tree)
+	}
+	if raw := CellTree(protocol.TextCell("not-json")); raw == nil || raw.Type != "raw" || raw.Raw != "not-json" {
+		t.Fatalf("invalid JSON fallback=%#v", raw)
+	}
+	nested := CellTreeAt(protocol.TextCell(`{"data":{"weight":0.4,"items":[{"id":900719925474099312345}]}}`), "$.data.items[0]", 4, 1024)
+	if nested == nil || nested.Type != "object" || len(nested.Children) != 1 || nested.Children[0].Node.Raw != "900719925474099312345" {
+		t.Fatalf("nested tree=%#v", nested)
+	}
+	shallow := CellTreeAt(protocol.TextCell(`{"a":{"b":{"c":1}}}`), "", 1, 1024)
+	if shallow == nil || shallow.Type != "object" || len(shallow.Children) != 0 {
+		t.Fatalf("depth budget ignored=%#v", shallow)
 	}
 }
