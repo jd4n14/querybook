@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jd4n14/querybook/internal/protocol"
+	"github.com/jd4n14/querybook/internal/results"
 	_ "modernc.org/sqlite"
 )
 
@@ -58,6 +59,80 @@ func TestSQLitePositionalExactResultsAndGuard(t *testing.T) {
 	_ = check.QueryRow("SELECT count(*) FROM t").Scan(&n)
 	if n != 0 {
 		t.Fatalf("forced delete did not execute: %d", n)
+	}
+}
+
+func TestSQLiteExpressionRuntimeKindsDriveExactFilters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-kinds.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE seed (n INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	queries := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{"expression", "SELECT 12 + 1 AS n", "integer"},
+		{"cte", "WITH x AS (SELECT 12 AS n) SELECT n FROM x", "integer"},
+		{"text", "SELECT '001' AS n UNION ALL SELECT '11' AS n", "string"},
+	}
+	for _, tc := range queries {
+		t.Run(tc.name, func(t *testing.T) {
+			req := protocol.Request{Version: 1, Type: "execute", RequestID: tc.name, ExecutionID: tc.name, Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: tc.sql}
+			got, err := Execute(context.Background(), req, func(protocol.Event) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Rows) == 0 || len(got.Rows[0]) != 1 {
+				t.Fatalf("rows=%#v", got.Rows)
+			}
+			if got.Rows[0][0].ValueKind != tc.want {
+				t.Fatalf("value kind=%q want %q cell=%#v", got.Rows[0][0].ValueKind, tc.want, got.Rows[0][0])
+			}
+			if got.Columns[0].DatabaseType != "" {
+				t.Fatalf("expression invented database type %q", got.Columns[0].DatabaseType)
+			}
+			r := results.New(results.Options{MaxBytes: 1 << 20, MaxSets: 1})
+			id, err := r.Retain(results.Metadata{Columns: got.Columns}, got.Rows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "integer" {
+				view, count, err := r.Filter(id, "@.n >= 11")
+				if err != nil || count != 1 || view == "" {
+					t.Fatalf("numeric filter view=%q count=%d err=%v", view, count, err)
+				}
+			} else {
+				if _, count, err := r.Filter(id, "@.n >= 11"); err != nil || count != 0 {
+					t.Fatalf("text accepted numeric predicate count=%d err=%v", count, err)
+				}
+				if _, count, err := r.Filter(id, `@.n == "001"`); err != nil || count != 1 {
+					t.Fatalf("text equality count=%d err=%v", count, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCellFromUsesDriverRuntimeKindWithoutInventingBooleans(t *testing.T) {
+	if got := cellFrom(int64(1), "TINYINT(1)"); got.ValueKind != "integer" || got.Text != "1" {
+		t.Fatalf("MySQL integer runtime kind=%#v", got)
+	}
+	if got := cellFrom("001", "INTEGER"); got.ValueKind != "string" || got.Text != "001" {
+		t.Fatalf("text runtime kind=%#v", got)
+	}
+	if got := cellFrom(true, "BOOLEAN"); got.ValueKind != "boolean" || got.Text != "1" {
+		t.Fatalf("boolean runtime kind=%#v", got)
+	}
+	if got := cellFrom([]byte{0, 1}, "BIT"); got.Kind != "binary" || got.ValueKind != "binary" {
+		t.Fatalf("binary runtime kind=%#v", got)
 	}
 }
 

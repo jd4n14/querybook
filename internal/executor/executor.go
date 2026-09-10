@@ -112,26 +112,44 @@ func cellFrom(v any, typ string) protocol.Cell {
 		// MySQL exposes values as bytes. Binary column names/types and invalid
 		// UTF-8 are retained as reversible base64; all valid text remains text.
 		if isBinaryType(typ) || strings.IndexByte(string(x), 0) >= 0 || !utf8Valid(x) {
-			return protocol.BinaryCell(x)
+			cell := protocol.BinaryCell(x)
+			cell.ValueKind = "binary"
+			return cell
 		}
-		return protocol.TextCell(string(x))
+		cell := protocol.TextCell(string(x))
+		cell.ValueKind = "string"
+		return cell
 	case string:
-		return protocol.TextCell(x)
+		cell := protocol.TextCell(x)
+		cell.ValueKind = "string"
+		return cell
 	case int64:
-		return protocol.TextCell(strconv.FormatInt(x, 10))
+		cell := protocol.TextCell(strconv.FormatInt(x, 10))
+		cell.ValueKind = "integer"
+		return cell
 	case uint64:
-		return protocol.TextCell(strconv.FormatUint(x, 10))
+		cell := protocol.TextCell(strconv.FormatUint(x, 10))
+		cell.ValueKind = "unsigned"
+		return cell
 	case int:
-		return protocol.TextCell(strconv.Itoa(x))
+		cell := protocol.TextCell(strconv.Itoa(x))
+		cell.ValueKind = "integer"
+		return cell
 	case float64:
-		return protocol.TextCell(strconv.FormatFloat(x, 'g', -1, 64))
+		cell := protocol.TextCell(strconv.FormatFloat(x, 'g', -1, 64))
+		cell.ValueKind = "float"
+		return cell
 	case bool:
+		cell := protocol.TextCell("0")
 		if x {
-			return protocol.TextCell("1")
+			cell.Text = "1"
 		}
-		return protocol.TextCell("0")
+		cell.ValueKind = "boolean"
+		return cell
 	default:
-		return protocol.TextCell(fmt.Sprint(x))
+		cell := protocol.TextCell(fmt.Sprint(x))
+		cell.ValueKind = "string"
+		return cell
 	}
 }
 

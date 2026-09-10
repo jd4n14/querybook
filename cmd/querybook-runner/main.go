@@ -24,6 +24,7 @@ const runnerVersion = "1.0.0"
 type runner struct {
 	mu          sync.Mutex
 	outMu       sync.Mutex
+	sendFn      func(protocol.Event) error
 	active      map[string]context.CancelFunc
 	closed      bool
 	store       *connections.Store
@@ -37,6 +38,9 @@ type runner struct {
 func (r *runner) send(e protocol.Event) error {
 	r.outMu.Lock()
 	defer r.outMu.Unlock()
+	if r.sendFn != nil {
+		return r.sendFn(e)
+	}
 	return protocol.Encode(os.Stdout, e)
 }
 func (r *runner) err(req protocol.Request, code, msg string) {
@@ -460,7 +464,7 @@ func (r *runner) startExport(req protocol.Request) error {
 				}
 				if exportErr == nil {
 					streamReq := protocol.Request{Version: 1, Type: "execute", RequestID: req.RequestID, ExecutionID: exportID, ConnectionID: meta.ConnectionID, Connection: meta.Connection, SQL: meta.OriginalSQL}
-					_, exportErr = export.ExportStream(ctx, req.Path, opts, func(cb export.StreamCallbacks) error {
+					stats, exportErr = export.ExportStream(ctx, req.Path, opts, func(cb export.StreamCallbacks) error {
 						_, streamErr := executor.Stream(ctx, streamReq, store.Resolve, executor.StreamSink{
 							OnSchema: func(set int, columns []protocol.Column) error { return cb.Schema(columns) },
 							OnRow:    func(set int, row []protocol.Cell) error { return cb.Row(ctx, row) },

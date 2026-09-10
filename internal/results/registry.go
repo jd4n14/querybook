@@ -336,7 +336,28 @@ func jsonValue(meta Metadata, index int, c protocol.Cell) any {
 	if c.Kind != "text" {
 		return c.Text
 	}
-	if index < len(meta.Columns) && isJSONNumericType(meta.Columns[index].DatabaseType) {
+	// ValueKind comes from the driver's runtime value. It takes precedence over
+	// ColumnTypes, whose DatabaseTypeName is commonly empty for SQLite
+	// expressions/CTEs and can describe a declared column rather than the value
+	// returned by an expression. In particular, MySQL TINYINT values arrive as
+	// int64 and must remain numeric; only an actual bool runtime value is bool.
+	if c.ValueKind == "integer" || c.ValueKind == "unsigned" || c.ValueKind == "float" {
+		if _, ok := new(big.Rat).SetString(c.Text); ok {
+			return exactNumber{raw: c.Text}
+		}
+	}
+	if c.ValueKind == "boolean" {
+		switch c.Text {
+		case "0", "false", "FALSE":
+			return false
+		case "1", "true", "TRUE":
+			return true
+		}
+	}
+	// Cells produced before ValueKind was added retain the metadata-based
+	// fallback for compatibility with tests and callers constructing cells.
+	legacyRuntimeKind := c.ValueKind == ""
+	if legacyRuntimeKind && index < len(meta.Columns) && isJSONNumericType(meta.Columns[index].DatabaseType) {
 		if _, ok := new(big.Rat).SetString(c.Text); ok {
 			return exactNumber{raw: c.Text}
 		}
@@ -349,7 +370,7 @@ func jsonValue(meta Metadata, index int, c protocol.Cell) any {
 			return decoded
 		}
 	}
-	if index < len(meta.Columns) && isJSONBoolType(meta.Columns[index].DatabaseType) {
+	if legacyRuntimeKind && index < len(meta.Columns) && isJSONBoolType(meta.Columns[index].DatabaseType) {
 		switch c.Text {
 		case "0", "false", "FALSE":
 			return false

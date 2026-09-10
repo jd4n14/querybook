@@ -83,9 +83,10 @@ type Column struct {
 }
 
 type Cell struct {
-	Kind   string `json:"kind"`
-	Text   string `json:"text,omitempty"`
-	Base64 string `json:"base64,omitempty"`
+	Kind      string `json:"kind"`
+	Text      string `json:"text,omitempty"`
+	Base64    string `json:"base64,omitempty"`
+	ValueKind string `json:"value_kind,omitempty"`
 }
 
 // ResultMetadata is returned with retained-set lifecycle responses. Column
