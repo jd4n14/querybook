@@ -403,13 +403,20 @@ func (p *parser) parsePath() (*rowPath, error) {
 		quote := p.s[p.i]
 		p.i++
 		start := p.i
-		for !p.eof() && p.s[p.i] != quote {
+		for !p.eof() {
+			if p.s[p.i] == '\\' {
+				p.i += 2
+				continue
+			}
+			if p.s[p.i] == quote {
+				break
+			}
 			p.i++
 		}
 		if p.eof() {
 			return nil, errors.New("unclosed JSONPath member")
 		}
-		name := p.s[start:p.i]
+		name := unquotePathMember(p.s[start:p.i], quote)
 		p.i++
 		p.skipSpace()
 		if p.eof() || p.s[p.i] != ']' {
@@ -453,6 +460,32 @@ func (p *parser) parsePathTail(path *rowPath) (*rowPath, error) {
 		if p.eof() || p.s[p.i] != '.' {
 			if !p.eof() && p.s[p.i] == '[' {
 				p.i++
+				if !p.eof() && (p.s[p.i] == '\'' || p.s[p.i] == '"') {
+					quote := p.s[p.i]
+					p.i++
+					start := p.i
+					for !p.eof() {
+						if p.s[p.i] == '\\' {
+							p.i += 2
+							continue
+						}
+						if p.s[p.i] == quote {
+							break
+						}
+						p.i++
+					}
+					if p.eof() {
+						return nil, errors.New("unclosed JSONPath member")
+					}
+					name := unquotePathMember(p.s[start:p.i], quote)
+					p.i++
+					if p.eof() || p.s[p.i] != ']' {
+						return nil, errors.New("unclosed JSONPath member")
+					}
+					p.i++
+					path.parts = append(path.parts, pathPart{name: name})
+					continue
+				}
 				start := p.i
 				for !p.eof() && p.s[p.i] >= '0' && p.s[p.i] <= '9' {
 					p.i++
@@ -478,4 +511,13 @@ func (p *parser) parsePathTail(path *rowPath) (*rowPath, error) {
 		path.parts = append(path.parts, pathPart{name: p.s[start:p.i]})
 	}
 	return path, nil
+}
+
+func unquotePathMember(raw string, quote byte) string {
+	if quote == '"' {
+		if decoded, err := strconv.Unquote(`"` + raw + `"`); err == nil {
+			return decoded
+		}
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(raw, `\'`, `'`), `\\`, `\`)
 }

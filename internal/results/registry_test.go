@@ -183,6 +183,10 @@ func TestNestedJSONPathAndGroupedPredicates(t *testing.T) {
 	if err != nil || count != 1 {
 		t.Fatalf("grouped filter view=%s count=%d err=%v", view, count, err)
 	}
+	view, count, err = r.Filter(id, `@.data['weight'] == 0.5`)
+	if err != nil || count != 1 {
+		t.Fatalf("bracket nested filter view=%s count=%d err=%v", view, count, err)
+	}
 }
 
 func TestFailedFilterLeavesExistingView(t *testing.T) {
