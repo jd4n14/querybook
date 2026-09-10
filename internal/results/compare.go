@@ -32,7 +32,10 @@ func CellTreeAt(cell protocol.Cell, path string, depth int, maxBytes int64) *pro
 		return nil
 	}
 	if depth <= 0 {
-		depth = 1
+		depth = 8
+	}
+	if depth > 32 {
+		depth = 32
 	}
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
