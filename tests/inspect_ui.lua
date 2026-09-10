@@ -24,17 +24,20 @@ function fake.result(op, payload, callback)
   if op == "view" then
     local filtered = payload.view_id == "v1"
     local source = payload.source_row or (filtered and 1 or (payload.offset or 0))
-    local tree = { kind = "object", children = {
-      { key = { raw = '"nested"' }, node = { kind = "object", children = {
-        { key = { raw = '"n"' }, node = { kind = "number", raw = "900719925474099312345" } },
-      } } },
-    } }
-    callback({ metadata = { columns = columns }, rows = { rows[source + 1] }, source_rows = { source }, total_rows = filtered and 1 or 2, view_id = filtered and "v1" or nil, trees = { ["0:5"] = tree } }, nil)
+    callback({ metadata = { columns = columns }, rows = { rows[source + 1] }, source_rows = { source }, total_rows = filtered and 1 or 2, view_id = filtered and "v1" or nil }, nil)
   elseif op == "filter" then
     if payload.expression == "bad" then callback({ valid = false, error = "invalid filter" }, nil)
     else active_filter = true; callback({ view_id = "v1", total_rows = 1 }, nil) end
+  elseif op == "cell" then
+    local tree = { type = "object", raw = rows[payload.row + 1][payload.column + 1].text, children = {
+      { key = { type = "string", raw = '"nested"' }, node = { type = "object", raw = '{"n":900719925474099312345}', children = {
+        { key = { type = "string", raw = '"n"' }, node = { type = "number", raw = "900719925474099312345" } },
+      } } },
+    } }
+    callback({ cell = rows[payload.row + 1][payload.column + 1], tree = tree }, nil)
   elseif op == "compare" then callback({ differences = { { name = "large", status = "different" } } }, nil)
-  elseif op == "export" then callback({ path = payload.path }, nil) end
+  elseif op == "export" then callback({ progress = true, export_id = payload.export_id, rows = 0, bytes = 0 }, nil); return { cancel = function() end }
+  elseif op == "export_cancel" then callback({ progress = false, export_id = payload.export_id }, nil) end
 end
 
 local result = { status = "success", query = "select 1", result_handle = "h1", generation = 1, connection_name = "test", database = "db", rows = rows, columns = columns }
@@ -52,6 +55,11 @@ for line, value in ipairs(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)) d
 end
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
 assert(text():find('"nested":', 1, true), "structured JSON tree expands lazily from exact runner presentation")
+for line, value in ipairs(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)) do
+  if value:find('"nested":', 1, true) then vim.api.nvim_win_set_cursor(state.win, { line, 0 }); break end
+end
+vim.api.nvim_feedkeys(vim.keycode("za"), "x", false)
+assert(text():find("900719925474099312345", 1, true), "expanded tree preserves exact >2^53 numeric lexeme")
 vim.api.nvim_feedkeys(vim.keycode("gR"), "x", false)
 assert(text():find("payload [structured] (raw)", 1, true), "raw/formatted toggle changes only inspector presentation")
 
@@ -68,7 +76,9 @@ assert(state.pinned_source == state.current_source, "pin tracks source row")
 inspect.compare(state)
 assert(calls[#calls].op == "compare" and calls[#calls].payload.result_handle == "h1", "compare uses immutable handle")
 inspect.export(state, "filtered", "jsonl", vim.fn.tempname())
-assert(calls[#calls].op == "export" and calls[#calls].payload.scope == "filtered", "export carries explicit scope")
+assert(calls[#calls].op == "export" and calls[#calls].payload.scope == "filtered" and calls[#calls].payload.export_id, "export carries explicit scope and cancel ID")
+inspect.cancel_export(state)
+assert(calls[#calls].op == "export_cancel" and calls[#calls].payload.export_id, "export cancellation targets export ID")
 
 local keymaps = vim.api.nvim_buf_get_keymap(state.buf, "n")
 local seen = {}; for _, map in ipairs(keymaps) do seen[map.lhs] = true end

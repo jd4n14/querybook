@@ -13,6 +13,12 @@ local function cell_text(row, column)
   return tostring(value or ""), cell
 end
 
+local function cell_display(cell)
+  if not cell or cell.kind == "null" then return "NULL", cell end
+  if cell.kind == "binary" then return "base64:" .. tostring(cell.base64 or ""), cell end
+  return tostring(cell.text or ""), cell
+end
+
 local function column_name(column)
   return type(column) == "table" and tostring(column.name or "") or tostring(column)
 end
@@ -49,7 +55,11 @@ local function format_meta(result, state)
     lines[#lines + 1] = "STALE · SQL changed; retained result is from the prior execution"
   end
   lines[#lines + 1] = string.format("%s · %s / %s", status:upper(), tostring(result.connection_name or "connection"), tostring(result.database or "(none)"))
-  lines[#lines + 1] = "SQL: " .. tostring(result.query or "")
+  local sql = tostring(result.query or "")
+  local compact_sql = sql:gsub("%s+", " ")
+  if #compact_sql > 72 then compact_sql = compact_sql:sub(1, 69) .. "…" end
+  lines[#lines + 1] = "SQL: " .. compact_sql
+  if compact_sql ~= sql:gsub("%s+", " ") then lines[#lines + 1] = "SQL truncated · gQ shows the full execution SQL" end
   if result.auto_limit_applied then lines[#lines + 1] = "execution: automatic outer LIMIT 500 applied" end
   if result.truncated then lines[#lines + 1] = "retention: truncated (" .. tostring(result.truncation_reason or "limit") .. ")" end
   local retained = state.retained_count or #(state.rows or {})
@@ -79,10 +89,10 @@ local function render_lines(state)
   if not row then add("(no matching rows)"); return lines, locations end
   add("")
   for col, column in ipairs(state.columns) do
-    local value, cell = cell_text(row, col)
+    local key = tostring(state.current_source) .. ":" .. tostring(col)
+    local value, cell = state.live_cells[key] and cell_display(state.live_cells[key]) or cell_text(row, col)
     local typ = type_label(column)
     local suffix = typ ~= "" and " [" .. typ .. "]" or ""
-    local key = tostring(state.current_source) .. ":" .. tostring(col)
     local expanded = state.expanded[key]
     local mode = state.raw[key] and " (raw)" or ""
     add(string.format("%s%s%s = %s", column_name(column), suffix, mode, value), { kind = "field", row = state.current_source, column = col, key = key })
@@ -91,11 +101,12 @@ local function render_lines(state)
       local function visit(node, depth, path)
         if not node then return end
         local prefix = string.rep("  ", depth)
-        if #node.children == 0 then
+        local children = node.children or {}
+        if #children == 0 then
           add(prefix .. tostring(node.raw), { kind = "node", row = state.current_source, column = col, path = path, key = key .. ":" .. path })
           return
         end
-        for index, entry in ipairs(node.children) do
+        for index, entry in ipairs(children) do
           local child_path = path == "" and tostring(index) or path .. "." .. tostring(index)
           local label = entry.key and entry.key.raw .. ": " or ("[" .. tostring(index) .. "] ")
           add(prefix .. label .. (entry.node.children and "" or tostring(entry.node.raw or "")), { kind = "node", row = state.current_source, column = col, path = child_path, key = key .. ":" .. child_path })
@@ -175,6 +186,37 @@ local function request_page(state, payload)
   end)
 end
 
+local function load_tree(state, location, done)
+  local key = tostring(location.row) .. ":" .. tostring(location.column)
+  if state.trees[key] then done(state.trees[key]); return end
+  if not state.handle or not state.runner or not state.runner.result then return done(nil) end
+  invoke(state.runner, "cell", {
+    result_handle = state.handle, row = location.row, column = location.column - 1,
+    tree_depth = 64, tree_bytes = 1024 * 1024,
+  }, function(data, err)
+    if state.closed or state.generation ~= state.result.generation then return end
+    if err then notify(err, vim.log.levels.WARN); done(nil); return end
+    if data and data.tree then state.trees[key] = data.tree end
+    if data and data.cell then state.live_cells[key] = data.cell end
+    done(data and data.tree)
+  end)
+end
+
+local function refresh_cell(state, location, done)
+  local key = tostring(location.row) .. ":" .. tostring(location.column)
+  if not state.handle or not state.runner or not state.runner.result then return done(nil) end
+  invoke(state.runner, "cell", {
+    result_handle = state.handle, row = location.row, column = location.column - 1,
+    tree_depth = 64, tree_bytes = 1024 * 1024,
+  }, function(data, err)
+    if state.closed or state.generation ~= state.result.generation then return end
+    if err then notify(err, vim.log.levels.WARN); done(nil); return end
+    if data and data.tree then state.trees[key] = data.tree end
+    if data and data.cell then state.live_cells[key] = data.cell end
+    done(data)
+  end)
+end
+
 local function set_row(state, match)
   if state.matching_count == 0 then state.current_match = 0; state.current_source = nil; redraw(state); return end
   state.current_match = math.max(1, math.min(match, state.matching_count))
@@ -230,11 +272,12 @@ end
 
 function M.export(state, scope, format, path)
   if scope == "full" then notify("full export includes original SQL and connection snapshot; automatic LIMIT and retention status are shown", vim.log.levels.INFO) end
-  state.export_request = invoke(state.runner, "export", { result_handle = state.handle, scope = scope, format = format, path = path, filter = state.filter }, function(data, err)
-    if err then notify(err, vim.log.levels.ERROR); return end
+  state.export_id = "qb-" .. tostring(vim.loop.hrtime())
+  state.export_request = invoke(state.runner, "export", { result_handle = state.handle, scope = scope, format = format, path = path, filter = state.filter, export_id = state.export_id }, function(data, err)
+    if err then state.export_request = nil; notify(err, vim.log.levels.ERROR); return end
     if data and data.export_id then state.export_id = data.export_id end
     if data and data.progress then notify(string.format("export %s: %s rows · %s bytes", tostring(data.export_id or state.export_id or ""), tostring(data.rows or 0), tostring(data.bytes or 0)))
-    elseif data and data.path then notify("exported " .. tostring(data.path)) end
+    elseif data and data.path then state.export_request = nil; notify("exported " .. tostring(data.path)) end
   end)
 end
 
@@ -253,7 +296,7 @@ function M.open(result, opts)
   local rows = result.rows or {}
   local state = {
     result = result, runner = opts.runner, handle = result.result_handle or result.handle_id,
-    generation = result.generation, columns = columns, rows = rows, by_source = {}, trees = {}, expanded = {}, raw = {},
+    generation = result.generation, columns = columns, rows = rows, by_source = {}, trees = {}, live_cells = {}, expanded = {}, raw = {},
     page_size = opts.page_size or 10, page = 1, matching_count = #rows, retained_count = tonumber(result.row_count) or #rows,
     indices = {}, all_indices = {}, current_match = #rows > 0 and 1 or 0, current_source = #rows > 0 and 0 or nil,
   }
@@ -263,7 +306,7 @@ function M.open(result, opts)
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
   vim.bo[buf].filetype, vim.bo[buf].modifiable = "querybook", false
   redraw(state)
-  local width, height = math.min(vim.o.columns - 4, 120), math.min(vim.o.lines - 6, math.max(8, vim.api.nvim_buf_line_count(buf) + 1))
+  local width, height = math.min(vim.o.columns - 4, 80), math.min(vim.o.lines - 6, math.max(8, vim.api.nvim_buf_line_count(buf) + 1))
   local win = vim.api.nvim_open_win(buf, true, { relative = "editor", row = math.floor((vim.o.lines - height) / 2), col = math.floor((vim.o.columns - width) / 2), width = width, height = height, style = "minimal", border = "rounded" }); state.win = win
   local function map(lhs, rhs, desc) vim.keymap.set("n", lhs, rhs, { buffer = buf, silent = true, desc = desc }) end
   local function move(delta) set_row(state, state.current_match + delta) end
@@ -273,14 +316,23 @@ function M.open(result, opts)
   map("r", function() move(1) end, "Querybook: next matching row"); map("R", function() move(-1) end, "Querybook: previous matching row")
   map("<CR>", function()
     local loc = current_location(state); if not loc then return end
-    local key = loc.key; state.expanded[key] = not state.expanded[key]; redraw(state)
+    local key = loc.key
+    if loc.kind == "field" and not state.trees[key] then
+      load_tree(state, loc, function(tree) if tree then state.expanded[key] = true; redraw(state) end end)
+    else state.expanded[key] = not state.expanded[key]; redraw(state) end
   end, "Querybook: expand or collapse JSON node")
   map("za", function()
     local loc = current_location(state); if not loc then return end
-    state.expanded[loc.key] = not state.expanded[loc.key]; redraw(state)
+    if loc.kind == "field" and not state.trees[loc.key] then
+      load_tree(state, loc, function(tree) if tree then state.expanded[loc.key] = true; redraw(state) end end)
+    else state.expanded[loc.key] = not state.expanded[loc.key]; redraw(state) end
   end, "Querybook: expand or collapse JSON node")
   map("gR", function()
-    local loc = current_location(state); if loc and loc.key then state.raw[loc.key] = not state.raw[loc.key]; redraw(state) end
+    local loc = current_location(state); if not loc or not loc.key then return end
+    refresh_cell(state, loc, function()
+      state.raw[loc.key] = not state.raw[loc.key]
+      redraw(state)
+    end)
   end, "Querybook: toggle raw/formatted value")
   map("K", function()
     local loc = current_location(state)
@@ -289,6 +341,7 @@ function M.open(result, opts)
     local details = { name = column.name, database_type = column.database_type, nullable = column.nullable }
     notify(vim.inspect(details), vim.log.levels.INFO)
   end, "Querybook: show source column metadata")
+  map("gQ", function() notify(tostring(state.result.query or ""), vim.log.levels.INFO) end, "Querybook: show full execution SQL")
   map("x", function() M.cancel_export(state) end, "Querybook: cancel export")
   map("yv", function()
     local loc = current_location(state); if not loc or loc.kind ~= "field" then return notify("place cursor on a field", vim.log.levels.WARN) end

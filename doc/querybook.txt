@@ -85,6 +85,8 @@ In a QuerybookInspect scratch window, use these normal-mode mappings:
     [p / ]p      Move to the previous or next matching page.
     Enter / za   Expand or collapse the JSON node under the cursor lazily.
     gR           Toggle raw/formatted display for the current field.
+    K            Show the actual source column metadata (type and nullable).
+    gQ           Show the full execution SQL when the compact header truncates it.
     yv          Copy the exact field value under the cursor. SQL NULL is copied
                 as the textual marker NULL; row and payload copies retain its
                 null type.

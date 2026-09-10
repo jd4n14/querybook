@@ -113,6 +113,8 @@ requests pages from the runner, so inspecting a large retained result does not
 copy every row into Lua. `[r`/`]r` move through matching rows and `[p`/`]p`
 move through matching pages. `Enter` or `za` expands a JSON field lazily when
 its column metadata is structured; `gR` toggles raw/formatted presentation.
+`K` shows the actual source metadata for the field and `gQ` shows the full SQL
+when the compact header truncates it.
 `yv` copies the exact field value, `yr` copies the exact row as ordered JSON
 (including `null`), and `yp` copies the complete payload; all three use the
 retained typed cells, so decimals and large integers do not round.
