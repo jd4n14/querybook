@@ -294,7 +294,11 @@ function M.export(state, scope, format, path)
   state.export_request = invoke(state.runner, "export", { result_handle = state.handle, scope = scope, format = format, path = path, filter = state.filter, export_id = state.export_id }, function(data, err)
     if err then state.export_request = nil; notify(err, vim.log.levels.ERROR); return end
     if data and data.export_id then state.export_id = data.export_id end
-    if data and data.progress then notify(string.format("export %s: %s rows · %s bytes", tostring(data.export_id or state.export_id or ""), tostring(data.rows or 0), tostring(data.bytes or 0)))
+    if data and data.progress then
+      -- Progress events carry row_count; rows is retained as a compatibility
+      -- fallback for older runner builds that used that field.
+      local row_count = data.row_count ~= nil and data.row_count or data.rows or 0
+      notify(string.format("export %s: %s rows · %s bytes", tostring(data.export_id or state.export_id or ""), tostring(row_count), tostring(data.bytes or 0)))
     elseif data and data.path then state.export_request = nil; notify("exported " .. tostring(data.path)) end
   end)
 end

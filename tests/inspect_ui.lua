@@ -37,7 +37,7 @@ function fake.result(op, payload, callback)
     } }
     callback({ cell = rows[payload.row + 1][payload.column + 1], tree = tree }, nil)
   elseif op == "compare" then callback({ differences = { { name = "large", status = "different" } } }, nil)
-  elseif op == "export" then callback({ progress = true, export_id = payload.export_id, rows = 0, bytes = 0 }, nil); return { cancel = function() end }
+  elseif op == "export" then callback({ progress = true, export_id = payload.export_id, row_count = 123, bytes = 456 }, nil); return { cancel = function() end }
   elseif op == "export_cancel" then callback({ progress = false, export_id = payload.export_id }, nil) end
 end
 
@@ -76,10 +76,18 @@ inspect.pin(state)
 assert(state.pinned_source == state.current_source, "pin tracks source row")
 inspect.compare(state)
 assert(calls[#calls].op == "compare" and calls[#calls].payload.result_handle == "h1", "compare uses immutable handle")
+local export_notifications = {}
+local previous_notify = vim.notify
+vim.notify = function(message, level)
+  export_notifications[#export_notifications + 1] = tostring(message)
+  return previous_notify(message, level)
+end
 inspect.export(state, "filtered", "jsonl", vim.fn.tempname())
 assert(calls[#calls].op == "export" and calls[#calls].payload.scope == "filtered" and calls[#calls].payload.export_id, "export carries explicit scope and cancel ID")
+assert(export_notifications[#export_notifications]:find("123 rows", 1, true) and export_notifications[#export_notifications]:find("456 bytes", 1, true), "export progress uses authoritative row_count and bytes")
 inspect.cancel_export(state)
 assert(calls[#calls].op == "export_cancel" and calls[#calls].payload.export_id, "export cancellation targets export ID")
+vim.notify = previous_notify
 
 local keymaps = vim.api.nvim_buf_get_keymap(state.buf, "n")
 local seen = {}; for _, map in ipairs(keymaps) do seen[map.lhs] = true end
