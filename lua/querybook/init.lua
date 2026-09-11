@@ -279,7 +279,6 @@ function M.run(opts)
 			result.connection_name, result.connection_profile, result.connection_driver = display_name, display_name, conn.driver
 			result.database, result.duration_ms = conn.database or conn.path, 0
 			result.auto_limit_applied, result.auto_limit_reason, result.truncated, result.truncation_reason = nil, nil, false, nil
-			result.row_offset, result.column_offset = 0, 0
 		else
 			bs.next_id = bs.next_id + 1
 			result = {
@@ -322,6 +321,10 @@ function M.run(opts)
 				result.last_successful_query = item.query
 				result.auto_limit_applied, result.auto_limit_reason = data.auto_limit_applied, data.auto_limit_reason
 				result.truncated, result.truncation_reason = data.truncated, data.truncation_reason
+				-- A successful execution gets a fresh immutable registry handle and
+				-- therefore cannot retain a prior filtered view or inspector state.
+				result.view_active, result.view_id, result.filter_expression, result.view_source_rows, result.view_count = false, nil, nil, nil, nil
+				result.row_offset, result.column_offset = 0, 0
 				if M._inspect_state and M._inspect_state.result == result then
 					M._inspect_state.closed = true
 					if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
@@ -353,7 +356,9 @@ function M.page(axis, direction)
 	local columns = result.columns or {}
 	if axis == "row" then
 		local page_size = M.config.preview_rows or M.config.max_rows or 10
-		result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, #rows - 1)))
+		local source_rows = result.view_active and result.view_source_rows
+		local row_count = source_rows and #source_rows or #rows
+		result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, row_count - 1)))
 	else
 		local page_size = M.config.max_columns or 12
 		result.column_offset = math.max(0, math.min((result.column_offset or 0) + direction * page_size, math.max(0, #columns - 1)))
@@ -373,7 +378,11 @@ function M.inspect()
   local current = parser.statement_at(statements, cursor)
   local best = current and find_current_result(bufnr, current)
   if not best then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
-  M._inspect_state = inspect_view.open(best, { runner = runner, page_size = M.config.preview_rows or 10 })
+  M._inspect_state = inspect_view.open(best, {
+    runner = runner,
+    page_size = M.config.preview_rows or 10,
+    on_view_change = function(result) render_result(bufnr, result) end,
+  })
 end
 
 local function inspect_state()

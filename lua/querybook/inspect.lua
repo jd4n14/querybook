@@ -237,16 +237,34 @@ function M.filter(state, expression)
   invoke(state.runner, "filter", { result_handle = state.handle, expression = expression, filter = expression }, function(data, err)
     if state.closed or state.generation ~= state.result.generation then return end
     if err or not data or data.valid == false then notify(err or data.error or "invalid filter", vim.log.levels.WARN); return end
-    state.filter, state.view_id, state.matching_count, state.current_match, state.current_source, state.page = expression, data.view_id, tonumber(data.total_rows or data.matching_count), 0, nil, 1
-    state.indices = nil
+    local indices = data.matching_indices or data.source_rows or data.source_indices
+    if type(indices) ~= "table" then
+      return notify("filter response did not include matching source rows", vim.log.levels.WARN)
+    end
+    state.filter, state.view_id, state.matching_count, state.current_match, state.current_source, state.page = expression, data.view_id, tonumber(data.total_rows or data.matching_count) or #indices, 0, nil, 1
+    state.indices = vim.deepcopy(indices)
+    state.result.view_active = true
+    state.result.view_id = state.view_id
+    state.result.filter_expression = expression
+    state.result.view_source_rows = vim.deepcopy(indices)
+    state.result.view_count = state.matching_count
+    state.result.row_offset = 0
+    if state.on_view_change then state.on_view_change(state.result) end
     redraw(state); set_row(state, 1)
   end)
 end
 
 function M.clear_filter(state)
-  if not state.filter then return end
+  if not state.filter and not state.result.view_active then return end
   state.filter, state.view_id, state.indices = nil, nil, state.all_indices
   state.matching_count, state.current_match, state.current_source, state.page = #state.indices, 0, nil, 1
+  state.result.view_active = false
+  state.result.view_id = nil
+  state.result.filter_expression = nil
+  state.result.view_source_rows = nil
+  state.result.view_count = nil
+  state.result.row_offset = 0
+  if state.on_view_change then state.on_view_change(state.result) end
   redraw(state); set_row(state, 1)
 end
 
@@ -294,13 +312,20 @@ function M.open(result, opts)
   opts = opts or {}
   local columns = result.columns or {}
   local rows = result.rows or {}
+  local active_indices = result.view_active and result.view_source_rows or nil
   local state = {
     result = result, runner = opts.runner, handle = result.result_handle or result.handle_id,
     generation = result.generation, columns = columns, rows = rows, by_source = {}, trees = {}, live_cells = {}, expanded = {}, raw = {},
-    page_size = opts.page_size or 10, page = 1, matching_count = #rows, retained_count = tonumber(result.row_count) or #rows,
-    indices = {}, all_indices = {}, current_match = #rows > 0 and 1 or 0, current_source = #rows > 0 and 0 or nil,
+    page_size = opts.page_size or 10, page = 1, matching_count = active_indices and (#active_indices) or #rows, retained_count = tonumber(result.row_count) or #rows,
+    indices = {}, all_indices = {}, current_match = active_indices and (#active_indices > 0 and 1 or 0) or (#rows > 0 and 1 or 0), current_source = active_indices and (active_indices[1]) or (#rows > 0 and 0 or nil),
+    filter = result.filter_expression, view_id = result.view_id, on_view_change = opts.on_view_change,
   }
-  for i, row in ipairs(rows) do local source = i - 1; state.by_source[source], state.indices[i], state.all_indices[i] = row, source, source end
+  for i, row in ipairs(rows) do local source = i - 1; state.by_source[source], state.all_indices[i] = row, source end
+  if active_indices then
+    state.indices = vim.deepcopy(active_indices)
+  else
+    state.indices = vim.deepcopy(state.all_indices)
+  end
   local buf = vim.api.nvim_create_buf(false, true); state.buf = buf; state.closed = false
   vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, once = true, callback = function() state.closed = true end })
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false

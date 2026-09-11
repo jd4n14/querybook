@@ -19,6 +19,7 @@ local columns = {
 local calls = {}
 local fake = {}
 local active_filter = false
+local view_updates = 0
 function fake.result(op, payload, callback)
   calls[#calls + 1] = { op = op, payload = payload }
   if op == "view" then
@@ -27,7 +28,7 @@ function fake.result(op, payload, callback)
     callback({ metadata = { columns = columns }, rows = { rows[source + 1] }, source_rows = { source }, total_rows = filtered and 1 or 2, view_id = filtered and "v1" or nil }, nil)
   elseif op == "filter" then
     if payload.expression == "bad" then callback({ valid = false, error = "invalid filter" }, nil)
-    else active_filter = true; callback({ view_id = "v1", total_rows = 1 }, nil) end
+    else active_filter = true; callback({ view_id = "v1", total_rows = 1, matching_indices = { 1 }, source_rows = { 1 } }, nil) end
   elseif op == "cell" then
     local tree = { type = "object", raw = rows[payload.row + 1][payload.column + 1].text, children = {
       { key = { type = "string", raw = '"nested"' }, node = { type = "object", raw = '{"n":900719925474099312345}', children = {
@@ -41,7 +42,7 @@ function fake.result(op, payload, callback)
 end
 
 local result = { status = "success", query = "select 1", result_handle = "h1", generation = 1, connection_name = "test", database = "db", rows = rows, columns = columns }
-local state = inspect.open(result, { runner = fake, page_size = 1 })
+local state = inspect.open(result, { runner = fake, page_size = 1, on_view_change = function() view_updates = view_updates + 1 end })
 assert(state and state.handle == "h1")
 local function text()
   return table.concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
@@ -64,11 +65,11 @@ vim.api.nvim_feedkeys(vim.keycode("gR"), "x", false)
 assert(text():find("payload [structured] (raw)", 1, true), "raw/formatted toggle changes only inspector presentation")
 
 inspect.filter(state, "bad")
-assert(state.filter == nil and state.matching_count == 2, "invalid filter keeps previous view")
+assert(state.filter == nil and state.matching_count == 2 and view_updates == 0, "invalid filter keeps previous view")
 inspect.filter(state, ".nested")
-assert(state.filter == ".nested" and state.matching_count == 1 and state.current_source == 1, "valid filter maps matching source index")
+assert(state.filter == ".nested" and state.matching_count == 1 and state.current_source == 1 and result.view_active and result.view_source_rows[1] == 1 and view_updates == 1, "valid filter maps matching source index")
 inspect.clear_filter(state)
-assert(state.filter == nil and state.matching_count == 2, "clear filter restores all retained rows")
+assert(state.filter == nil and state.matching_count == 2 and not result.view_active and result.view_source_rows == nil and view_updates == 2, "clear filter restores all retained rows")
 vim.api.nvim_buf_call(state.buf, function() vim.cmd("normal ]r") end)
 assert(state.current_source == 1 and calls[#calls].op == "view" and calls[#calls].payload.limit == 1, "row navigation requests one matching row")
 inspect.pin(state)

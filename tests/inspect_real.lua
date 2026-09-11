@@ -4,6 +4,7 @@ local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h")
 vim.opt.rtp:prepend(root)
 local querybook = require("querybook")
 local runner = require("querybook.runner")
+local inspect_view = require("querybook.inspect")
 
 local store = vim.fn.tempname() .. ".connections.sqlite"
 querybook.setup({
@@ -16,11 +17,14 @@ querybook.setup({
 vim.cmd("enew")
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "WITH RECURSIVE nums(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM nums WHERE n < 19) SELECT CAST(n AS INTEGER) AS n, '900719925474099312345' AS large, NULL AS sql_null, '' AS empty, x'00FF' AS blob, '{\"n\":900719925474099312345}' AS payload FROM nums;" })
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
+local notebook_buf = vim.api.nvim_get_current_buf()
+local notebook_win = vim.api.nvim_get_current_win()
 querybook.run({})
-local function result_text()
+local function result_text(bufnr)
+  bufnr = bufnr or 0
   local ns = vim.api.nvim_create_namespace("querybook")
   local out = {}
-  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, { details = true })) do
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })) do
     for _, line in ipairs(mark[4].virt_lines or {}) do out[#out + 1] = line[1][1] end
   end
   return table.concat(out, "\n")
@@ -66,13 +70,30 @@ runner.result("view", { result_handle = view.handle, offset = 0, limit = 1 }, fu
 assert(vim.wait(5000, function() return pages ~= nil or failure ~= nil end), "real page response")
 assert(not failure and pages.source_rows and pages.source_rows[1] == 0 and pages.total_rows == 20, "single row page preserves source ordinal")
 local filtered
-runner.result("filter", { result_handle = view.handle, filter = "@['$values'][0] >= \"11\" && @['$values'][0] <= \"19\"" }, function(data, err) filtered, failure = data, err end)
+runner.result("filter", { result_handle = view.handle, filter = "@['$values'][0] >= 11 && @['$values'][0] <= 19" }, function(data, err) filtered, failure = data, err end)
 assert(vim.wait(5000, function() return filtered ~= nil or failure ~= nil end), "real all-retained filter response")
 assert(not failure and filtered.view_id and filtered.total_rows == 9, "filter evaluates all retained rows")
 local filtered_page
 runner.result("view", { result_handle = view.handle, view_id = filtered.view_id, offset = 0, limit = 1 }, function(data, err) filtered_page, failure = data, err end)
 assert(vim.wait(5000, function() return filtered_page ~= nil or failure ~= nil end), "real filtered page response")
 assert(not failure and filtered_page.source_rows and filtered_page.source_rows[1] == 11, "filtered page preserves source index")
+-- The accepted view is shared with the inline viewport. Use more than one
+-- page and verify the source ordinals remain attached to the immutable rows.
+local broad_filter = "@['$values'][0] >= 2 && @['$values'][0] <= 9 || @['$values'][0] >= 11 && @['$values'][0] <= 19"
+inspect_view.filter(view, broad_filter)
+assert(vim.wait(5000, function() return view.filter == broad_filter and view.matching_count == 17 end), "inspector accepts all retained rows beyond first page")
+local inline = result_text(notebook_buf)
+assert(inline:find("17 matching rows · 20 retained rows", 1, true) and inline:find("│ 2", 1, true), "inline viewport follows filtered source rows")
+vim.api.nvim_set_current_win(notebook_win)
+querybook.next_page()
+inline = result_text(notebook_buf)
+assert(inline:find("│ 13", 1, true) and inline:find("matching rows 11-17 of 17", 1, true), "inline next page uses filtered matching indices")
+querybook.prev_page()
+inline = result_text(notebook_buf)
+assert(inline:find("│ 2", 1, true) and inline:find("matching rows 1-10 of 17", 1, true), "inline previous page restores first filtered page")
+inspect_view.clear_filter(view)
+assert(vim.wait(1000, function() return not view.filter and not view.result.view_active end), "clear filter restores result view")
+assert(result_text(notebook_buf):find("20 retained rows", 1, true) and not result_text(notebook_buf):find("matching rows", 1, true), "inline clear restores retained viewport")
 vim.api.nvim_win_close(view.win, true)
 print("querybook real inspector tests passed")
 vim.cmd("qa!")
