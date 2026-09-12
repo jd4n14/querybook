@@ -59,7 +59,9 @@ function M.lines(result, config)
   local max_width = config.max_column_width or 32
   local rows = result.rows or {}
   local columns = result.columns or {}
-  local row_offset = math.max(0, math.min(result.row_offset or 0, math.max(0, #rows - 1)))
+  local source_rows = result.view_active and result.view_source_rows
+  local total_rows = source_rows and #source_rows or #rows
+  local row_offset = math.max(0, math.min(result.row_offset or 0, math.max(0, total_rows - 1)))
   local column_offset = math.max(0, math.min(result.column_offset or 0, math.max(0, #columns - 1)))
   local visible = {}
   for i = column_offset + 1, math.min(#columns, column_offset + max_columns) do
@@ -74,11 +76,15 @@ function M.lines(result, config)
   if result.status == "error" then
     status = "ERROR · " .. tostring(result.error or "query failed")
   elseif result.status == "stale" then
-    status = "STALE · SQL changed; " .. #rows .. " retained rows · run again"
+    status = source_rows
+      and string.format("STALE · SQL changed; %d matching rows · %d retained rows · run again", total_rows, #rows)
+      or "STALE · SQL changed; " .. #rows .. " retained rows · run again"
   elseif result.status == "running" then
     status = "RUNNING"
   else
-    status = string.format("%d retained rows · %d columns · %d ms", #rows, #columns, result.duration_ms or 0)
+    status = source_rows
+      and string.format("%d matching rows · %d retained rows · %d columns · %d ms", total_rows, #rows, #columns, result.duration_ms or 0)
+      or string.format("%d retained rows · %d columns · %d ms", #rows, #columns, result.duration_ms or 0)
   end
   status = status .. " · " .. connection .. " / " .. database
   if result.auto_limit_applied then status = status .. " · auto LIMIT 500" end
@@ -95,8 +101,10 @@ function M.lines(result, config)
     local widths = {}
     for i, column in ipairs(visible) do
       widths[i] = math.min(max_width, math.max(#name(column), 3))
-      for row_index = row_offset + 1, math.min(#rows, row_offset + preview_rows) do
-        widths[i] = math.min(max_width, math.max(widths[i], #M.value_text(rows[row_index], column)))
+      for row_index = row_offset + 1, math.min(total_rows, row_offset + preview_rows) do
+        local source = source_rows and source_rows[row_index]
+        local row = source_rows and rows[source + 1] or rows[row_index]
+        widths[i] = math.min(max_width, math.max(widths[i], #M.value_text(row, column)))
       end
     end
     local header, divider = "  │ ", "  ├─"
@@ -107,10 +115,11 @@ function M.lines(result, config)
     lines[#lines + 1] = chunks(header, "QuerybookHeader")
     lines[#lines + 1] = chunks(divider, "QuerybookDivider")
     local first = row_offset + 1
-    local last = math.min(#rows, row_offset + preview_rows)
+    local last = math.min(total_rows, row_offset + preview_rows)
     local clipped = false
     for row_index = first, last do
-      local row, row_text = rows[row_index], "  │ "
+      local source = source_rows and source_rows[row_index]
+      local row, row_text = source_rows and rows[source + 1] or rows[row_index], "  │ "
       for i, column in ipairs(visible) do
         local raw = M.value_text(row, column)
         if #raw > max_value_length then
@@ -121,10 +130,15 @@ function M.lines(result, config)
       end
       lines[#lines + 1] = chunks(row_text, "QuerybookRow")
     end
-    if #rows == 0 then lines[#lines + 1] = chunks("  │ (no rows)", "QuerybookMeta") end
+    if total_rows == 0 then lines[#lines + 1] = chunks("  │ (no matching rows)", "QuerybookMeta") end
     if clipped then lines[#lines + 1] = chunks("  │ values clipped to " .. max_value_length .. " characters · Inspect for exact values", "QuerybookMeta") end
-    if #rows > 0 then
-      lines[#lines + 1] = chunks("  │ " .. range_label(first, last, #rows) .. " · QuerybookNextPage/PrevPage", "QuerybookMeta")
+    if total_rows > 0 then
+      local range = range_label(first, last, total_rows)
+      if source_rows then
+        local first_source, last_source = source_rows[first], source_rows[last]
+        range = range:gsub("^rows", "matching rows") .. string.format(" · source %d-%d of %d", first_source + 1, last_source + 1, #rows)
+      end
+      lines[#lines + 1] = chunks("  │ " .. range .. " · QuerybookNextPage/PrevPage", "QuerybookMeta")
     end
     if #columns > #visible then
       lines[#lines + 1] = chunks("  │ columns " .. (column_offset + 1) .. "-" .. (column_offset + #visible) .. " of " .. #columns .. " · QuerybookNextColumn/PrevColumn", "QuerybookMeta")

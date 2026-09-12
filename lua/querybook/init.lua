@@ -3,6 +3,7 @@ local render = require("querybook.render")
 local risk = require("querybook.risk")
 local runner = require("querybook.runner")
 local connections = require("querybook.connections")
+local inspect_view = require("querybook.inspect")
 
 local M = {}
 local ns = vim.api.nvim_create_namespace("querybook")
@@ -102,8 +103,21 @@ local function find_current_result(bufnr, statement)
   return found
 end
 
+local function release_result_handle(result)
+  if not result or not result.result_handle or not runner.result then return end
+  local handle = result.result_handle
+  result.result_handle = nil
+  runner.result("release", { result_handle = handle }, function() end)
+end
+
 remove_result = function(bufnr, result)
   if result.extmark then pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, result.extmark) end
+  if M._inspect_state and M._inspect_state.result == result then
+    M._inspect_state.closed = true
+    if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
+    M._inspect_state = nil
+  end
+  release_result_handle(result)
   buffer_state(bufnr).results[result.id] = nil
 end
 
@@ -265,7 +279,6 @@ function M.run(opts)
 			result.connection_name, result.connection_profile, result.connection_driver = display_name, display_name, conn.driver
 			result.database, result.duration_ms = conn.database or conn.path, 0
 			result.auto_limit_applied, result.auto_limit_reason, result.truncated, result.truncation_reason = nil, nil, false, nil
-			result.row_offset, result.column_offset = 0, 0
 		else
 			bs.next_id = bs.next_id + 1
 			result = {
@@ -285,10 +298,16 @@ function M.run(opts)
 			result.handle = nil
 			if err then
 				result.status, result.error = "error", err
+				if M._inspect_state and M._inspect_state.result == result then M._inspect_state.generation = result.generation end
 				result.previous_query = (#(result.rows or {}) > 0 or #(result.columns or {}) > 0) and previous_query or nil
 				result.truncated, result.truncation_reason = previous_truncated or false, previous_truncation_reason
 			else
 				result.status, result.rows, result.columns = "success", data.rows or {}, data.columns or {}
+				local previous_handle = result.result_handle
+				result.result_handle = data.result_handle or data.handle
+				if previous_handle and previous_handle ~= result.result_handle and runner.result then
+					runner.result("release", { result_handle = previous_handle }, function() end)
+				end
 				-- The runner may attach the authoritative execution snapshot. Keep
 				-- that metadata with this result even if the manager selection changes.
 				local snapshot = data.connection or data.connection_metadata
@@ -302,6 +321,15 @@ function M.run(opts)
 				result.last_successful_query = item.query
 				result.auto_limit_applied, result.auto_limit_reason = data.auto_limit_applied, data.auto_limit_reason
 				result.truncated, result.truncation_reason = data.truncated, data.truncation_reason
+				-- A successful execution gets a fresh immutable registry handle and
+				-- therefore cannot retain a prior filtered view or inspector state.
+				result.view_active, result.view_id, result.filter_expression, result.view_source_rows, result.view_count = false, nil, nil, nil, nil
+				result.row_offset, result.column_offset = 0, 0
+				if M._inspect_state and M._inspect_state.result == result then
+					M._inspect_state.closed = true
+					if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
+					M._inspect_state = nil
+				end
 			end
       render_result(bufnr, result)
     end)
@@ -328,7 +356,9 @@ function M.page(axis, direction)
 	local columns = result.columns or {}
 	if axis == "row" then
 		local page_size = M.config.preview_rows or M.config.max_rows or 10
-		result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, #rows - 1)))
+		local source_rows = result.view_active and result.view_source_rows
+		local row_count = source_rows and #source_rows or #rows
+		result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, row_count - 1)))
 	else
 		local page_size = M.config.max_columns or 12
 		result.column_offset = math.max(0, math.min((result.column_offset or 0) + direction * page_size, math.max(0, #columns - 1)))
@@ -348,27 +378,53 @@ function M.inspect()
   local current = parser.statement_at(statements, cursor)
   local best = current and find_current_result(bufnr, current)
   if not best then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
-  local content, locations = inspect_content(best)
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].filetype = "querybook"
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
-  local function current_location()
-    return locations[vim.api.nvim_win_get_cursor(0)[1]]
-  end
-  vim.keymap.set("n", "yv", function()
-    local location = current_location()
-    if not location or location.kind ~= "field" then return vim.notify("Querybook: place cursor on a field", vim.log.levels.WARN) end
-    copy_register(render.value_text(best.rows[location.row], location.column))
-  end, { buffer = buf, silent = true, desc = "Copy exact Querybook field" })
-  vim.keymap.set("n", "yr", function()
-    local location = current_location()
-    if not location or not location.row then return vim.notify("Querybook: place cursor on a row", vim.log.levels.WARN) end
-    copy_register(row_payload(best, best.rows[location.row]))
-  end, { buffer = buf, silent = true, desc = "Copy exact Querybook row JSON" })
-  vim.keymap.set("n", "yp", function() copy_register(full_payload(best)) end, { buffer = buf, silent = true, desc = "Copy exact Querybook payload JSON" })
-  local width, height = math.min(vim.o.columns - 4, 120), math.min(vim.o.lines - 6, math.max(4, #content + 1))
-  vim.api.nvim_open_win(buf, true, { relative = "editor", row = math.floor((vim.o.lines - height) / 2), col = math.floor((vim.o.columns - width) / 2), width = width, height = height, style = "minimal", border = "rounded" })
-  vim.keymap.set("n", "q", "<Cmd>close<CR>", { buffer = buf, silent = true })
+  M._inspect_state = inspect_view.open(best, {
+    runner = runner,
+    page_size = M.config.preview_rows or 10,
+    on_view_change = function(result) render_result(bufnr, result) end,
+  })
+end
+
+local function inspect_state()
+  local view = M._inspect_state
+  if view and view.buf and vim.api.nvim_buf_is_valid(view.buf) then return view end
+  return nil
+end
+
+function M.filter()
+  local view = inspect_state()
+  if not view then return vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+  vim.ui.input({ prompt = "Querybook filter (JSONPath or shorthand; empty clears): " }, function(value)
+    if value == nil then return end
+    inspect_view.filter(view, value)
+  end)
+end
+
+function M.clear_filter()
+  local view = inspect_state()
+  if view then inspect_view.clear_filter(view) else vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+end
+
+function M.pin_row()
+  local view = inspect_state()
+  if view then inspect_view.pin(view) else vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+end
+
+function M.compare_rows()
+  local view = inspect_state()
+  if view then inspect_view.compare(view) else vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+end
+
+function M.export(scope)
+  local view = inspect_state()
+  if not view then return vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+  vim.ui.input({ prompt = "Export format (csv/jsonl): " }, function(format)
+    if not format or format == "" then return end
+    vim.ui.input({ prompt = "Export path (must not already exist): " }, function(path)
+      if not path or path == "" then return end
+      inspect_view.export(view, scope, format, path)
+    end)
+  end)
 end
 
 function M.toggle()
@@ -406,6 +462,13 @@ function M.setup(opts)
   if not M._commands_created then
     vim.api.nvim_create_user_command("QuerybookRun", function(command_opts) M.run({ range = command_opts.range, line1 = command_opts.line1, line2 = command_opts.line2, force = command_opts.bang }) end, { range = true, bang = true, desc = "Run SQL under cursor or visual selection" })
     vim.api.nvim_create_user_command("QuerybookInspect", M.inspect, { desc = "Inspect Querybook result" })
+		vim.api.nvim_create_user_command("QuerybookFilter", M.filter, { desc = "Filter the open Querybook inspector" })
+		vim.api.nvim_create_user_command("QuerybookClearFilter", M.clear_filter, { desc = "Clear the Querybook inspector filter" })
+		vim.api.nvim_create_user_command("QuerybookPinRow", M.pin_row, { desc = "Pin or unpin the current inspector row" })
+		vim.api.nvim_create_user_command("QuerybookCompareRows", M.compare_rows, { desc = "Compare the current row with the pinned row" })
+		vim.api.nvim_create_user_command("QuerybookExportRetained", function() M.export("retained") end, { desc = "Export retained Querybook rows" })
+		vim.api.nvim_create_user_command("QuerybookExportFiltered", function() M.export("filtered") end, { desc = "Export filtered Querybook rows" })
+		vim.api.nvim_create_user_command("QuerybookExportFull", function() M.export("full") end, { desc = "Export the full Querybook result" })
 		vim.api.nvim_create_user_command("QuerybookToggle", M.toggle, { desc = "Collapse or expand Querybook result" })
 		vim.api.nvim_create_user_command("QuerybookNextPage", M.next_page, { desc = "Show next retained Querybook rows" })
 		vim.api.nvim_create_user_command("QuerybookPrevPage", M.prev_page, { desc = "Show previous retained Querybook rows" })

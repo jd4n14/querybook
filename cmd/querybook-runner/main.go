@@ -10,26 +10,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jd4n14/querybook/internal/connections"
 	"github.com/jd4n14/querybook/internal/credentials"
 	"github.com/jd4n14/querybook/internal/executor"
+	"github.com/jd4n14/querybook/internal/export"
 	"github.com/jd4n14/querybook/internal/protocol"
+	"github.com/jd4n14/querybook/internal/results"
 )
 
 const runnerVersion = "1.0.0"
 
 type runner struct {
-	mu        sync.Mutex
-	outMu     sync.Mutex
-	active    map[string]context.CancelFunc
-	closed    bool
-	store     *connections.Store
-	storePath string
+	mu          sync.Mutex
+	outMu       sync.Mutex
+	sendFn      func(protocol.Event) error
+	active      map[string]context.CancelFunc
+	closed      bool
+	store       *connections.Store
+	storePath   string
+	results     *results.Registry
+	exports     map[string]context.CancelFunc
+	exportOwner map[string]string
+	exportWG    sync.WaitGroup
 }
 
 func (r *runner) send(e protocol.Event) error {
 	r.outMu.Lock()
 	defer r.outMu.Unlock()
+	if r.sendFn != nil {
+		return r.sendFn(e)
+	}
 	return protocol.Encode(os.Stdout, e)
 }
 func (r *runner) err(req protocol.Request, code, msg string) {
@@ -163,14 +174,348 @@ func (r *runner) execute(req protocol.Request) {
 			cancel()
 			return
 		}
-		connection, _ := store.Get(req.ConnectionID)
-		_ = r.send(protocol.Event{Version: 1, Type: "result_end", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, DurationMS: time.Since(start).Milliseconds(), ResultSets: res.ResultSets, RowCount: int64(len(res.Rows)), ObservedRows: res.Observed, RetainedBytes: res.RetainedBytes, Truncated: res.Truncated, TruncationReason: res.Reason, AutoLimitApplied: res.AutoLimit, AutoLimitReason: res.AutoLimitWhy, AffectedRows: res.Affected, Connection: &connection, Terminal: true})
+		connection := res.Connection
+		if req.ConnectionID != "" {
+			if stored, getErr := store.Get(req.ConnectionID); getErr == nil {
+				// Keep the execution-time snapshot from executor. The store lookup
+				// only supplies fields in case a resolver omitted them; it must not
+				// retarget this result after a metadata edit.
+				if connection.ID == "" {
+					connection = stored
+				}
+			}
+		}
+		meta := results.Metadata{
+			Columns:          res.Columns,
+			OriginalSQL:      req.SQL,
+			ExecutedSQL:      res.ExecutedSQL,
+			AutoLimitApplied: res.AutoLimit,
+			AutoLimitReason:  res.AutoLimitWhy,
+			ConnectionID:     req.ConnectionID,
+			Connection:       connection,
+			ExecutedAt:       start,
+			ResultSets:       res.ResultSets,
+			ObservedRows:     res.Observed,
+			RetainedBytes:    res.RetainedBytes,
+			Truncated:        res.Truncated,
+			TruncationReason: res.Reason,
+			AffectedRows:     res.Affected,
+		}
+		handle, retainErr := r.results.Retain(meta, res.Rows)
+		if retainErr != nil {
+			r.err(req, "limit", retainErr.Error())
+			cancel()
+			return
+		}
+		_ = r.send(protocol.Event{Version: 1, Type: "result_end", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, DurationMS: time.Since(start).Milliseconds(), ResultSets: res.ResultSets, RowCount: int64(len(res.Rows)), ObservedRows: res.Observed, RetainedBytes: res.RetainedBytes, Truncated: res.Truncated, TruncationReason: res.Reason, AutoLimitApplied: res.AutoLimit, AutoLimitReason: res.AutoLimitWhy, AffectedRows: res.Affected, Handle: handle, Connection: &connection, Terminal: true})
 		cancel()
 	}()
 }
 
+func resultProtocolMetadata(meta results.Metadata) *protocol.ResultMetadata {
+	columns := make([]protocol.Column, len(meta.Columns))
+	copy(columns, meta.Columns)
+	connection := meta.Connection
+	return &protocol.ResultMetadata{
+		Columns: columns, OriginalSQL: meta.OriginalSQL, ExecutedSQL: meta.ExecutedSQL,
+		AutoLimitApplied: meta.AutoLimitApplied, AutoLimitReason: meta.AutoLimitReason,
+		ConnectionID: meta.ConnectionID, Connection: &connection, ExecutedAt: meta.ExecutedAt.UTC().Format(time.RFC3339Nano),
+		ResultSets: meta.ResultSets, ObservedRows: meta.ObservedRows, RetainedBytes: meta.RetainedBytes,
+		Truncated: meta.Truncated, TruncationReason: meta.TruncationReason, AffectedRows: meta.AffectedRows,
+	}
+}
+
+func (r *runner) result(req protocol.Request) {
+	var event protocol.Event
+	event.Version, event.Type, event.RequestID, event.Op, event.Handle = 1, "result", req.RequestID, req.Op, req.Handle
+	switch req.Op {
+	case "page", "view":
+		var snap results.Snapshot
+		var ordinals []int
+		var err error
+		offset, limit := req.Offset, req.Limit
+		if req.PageSize > 0 {
+			limit = req.PageSize
+			page := req.Page
+			if page <= 0 {
+				page = 1
+			}
+			offset = (page - 1) * limit
+		}
+		if req.ViewID != "" {
+			snap, ordinals, err = r.results.PageView(req.Handle, req.ViewID, offset, limit)
+			event.ViewID = req.ViewID
+		} else if req.Op == "page" {
+			snap, ordinals, err = r.results.Page(req.Handle, offset, limit)
+		} else {
+			snap, ordinals, err = r.results.View(req.Handle, offset, limit)
+		}
+		if err == nil {
+			event.Rows, event.SourceRows, event.SourceIndices, event.TotalRows = snap.Rows, ordinals, ordinals, int64(snap.TotalRows)
+			event.Pinned, event.Metadata = snap.Pinned, resultProtocolMetadata(snap.Meta)
+		}
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+	case "filter":
+		expression := req.Filter
+		if expression == "" {
+			expression = req.Expression
+		}
+		viewID, count, err := r.results.Filter(req.Handle, expression)
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		snap, getErr := r.results.Get(req.Handle)
+		if getErr != nil {
+			r.err(req, "result", getErr.Error())
+			return
+		}
+		indices, _ := r.results.ViewIndices(req.Handle, viewID)
+		event.ViewID, event.TotalRows, event.Pinned, event.Metadata, event.MatchingIndices, event.SourceRows, event.SourceIndices, event.Valid = viewID, int64(count), snap.Pinned, resultProtocolMetadata(snap.Meta), indices, indices, indices, true
+	case "filter_clear":
+		snap, err := r.results.Get(req.Handle)
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		indices := make([]int, len(snap.Rows))
+		for i := range indices {
+			indices[i] = i
+		}
+		event.TotalRows, event.Pinned, event.Metadata, event.MatchingIndices, event.SourceRows, event.SourceIndices, event.Valid = int64(len(indices)), snap.Pinned, resultProtocolMetadata(snap.Meta), indices, indices, indices, true
+	case "cell", "tree":
+		columnIndex := req.Column
+		if req.ColumnName != "" {
+			snap, getErr := r.results.Get(req.Handle)
+			if getErr != nil {
+				r.err(req, "result", getErr.Error())
+				return
+			}
+			var resolveErr error
+			columnIndex, resolveErr = snap.ColumnIndex(req.ColumnName)
+			if resolveErr != nil {
+				r.err(req, "result", resolveErr.Error())
+				return
+			}
+		}
+		cell, column, err := r.results.Cell(req.Handle, req.Row, columnIndex)
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		if req.Op == "cell" {
+			event.Cell, event.Column = &cell, &column
+		}
+		event.Tree = results.CellTreeAt(cell, req.JSONPath, req.TreeDepth, req.TreeBytes)
+	case "compare":
+		sourceRow, currentRow := req.SourceRow, req.CurrentRow
+		if req.LeftSourceIndex != 0 || req.RightSourceIndex != 0 {
+			sourceRow, currentRow = req.LeftSourceIndex, req.RightSourceIndex
+		}
+		changes, err := r.results.CompareRows(req.Handle, sourceRow, currentRow)
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		event.Changes = changes
+	case "payload":
+		snap, err := r.results.Get(req.Handle)
+		if err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		event.Rows, event.TotalRows, event.Pinned, event.Metadata = snap.Rows, int64(snap.TotalRows), snap.Pinned, resultProtocolMetadata(snap.Meta)
+	case "export":
+		if err := r.startExport(req); err != nil {
+			r.err(req, "export", err.Error())
+		}
+		return
+	case "export_cancel":
+		r.mu.Lock()
+		cancel := r.exports[req.ExportID]
+		owner := r.exportOwner[req.ExportID]
+		r.mu.Unlock()
+		if cancel == nil || owner != req.Handle {
+			r.err(req, "export", "export is not running")
+			return
+		}
+		cancel()
+		event.ExportID, event.Progress = req.ExportID, false
+	case "release":
+		r.mu.Lock()
+		for id, owner := range r.exportOwner {
+			if owner == req.Handle {
+				if cancel := r.exports[id]; cancel != nil {
+					cancel()
+				}
+			}
+		}
+		r.mu.Unlock()
+		if err := r.results.Release(req.Handle); err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+	case "pin":
+		if err := r.results.Pin(req.Handle); err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+		event.Pinned = true
+	case "unpin":
+		if err := r.results.Unpin(req.Handle); err != nil {
+			r.err(req, "result", err.Error())
+			return
+		}
+	default:
+		// Filter and compare are added in the next core unit; accepting their
+		// names here would incorrectly report success without doing work.
+		r.err(req, "result", "operation not implemented")
+		return
+	}
+	event.Terminal = true
+	_ = r.send(event)
+}
+
+func sameConnection(a, b protocol.Connection) bool {
+	return a.ID == b.ID && a.Driver == b.Driver && a.Path == b.Path && a.Host == b.Host && a.Port == b.Port && a.Socket == b.Socket && a.User == b.User && a.Database == b.Database && a.Charset == b.Charset
+}
+
+func (r *runner) startExport(req protocol.Request) error {
+	if req.Path == "" {
+		return errors.New("missing destination")
+	}
+	switch req.Scope {
+	case "retained", "filtered", "full":
+	default:
+		return errors.New("invalid export scope")
+	}
+	if req.Scope == "filtered" && req.ViewID == "" && req.Filter == "" && req.Expression == "" {
+		return errors.New("filtered export requires a view or filter")
+	}
+	var snap results.Snapshot
+	var meta results.Metadata
+	var err error
+	if req.Scope == "full" {
+		meta, err = r.results.Metadata(req.Handle)
+	} else {
+		snap, err = r.results.Get(req.Handle)
+		meta = snap.Meta
+	}
+	if err != nil {
+		return err
+	}
+	format := export.Format(strings.ToLower(req.Format))
+	if format == "" {
+		format = export.CSV
+	}
+	if format != export.CSV && format != export.JSONL {
+		return errors.New("unsupported format")
+	}
+	exportID := req.ExportID
+	if exportID == "" {
+		exportID = uuid.NewString()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("runner is shutting down")
+	}
+	if r.exports == nil {
+		r.exports, r.exportOwner = make(map[string]context.CancelFunc), make(map[string]string)
+	}
+	if _, exists := r.exports[exportID]; exists {
+		r.mu.Unlock()
+		cancel()
+		return errors.New("export ID is already running")
+	}
+	r.exports[exportID], r.exportOwner[exportID] = cancel, req.Handle
+	r.exportWG.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer r.exportWG.Done()
+		defer func() {
+			r.mu.Lock()
+			delete(r.exports, exportID)
+			delete(r.exportOwner, exportID)
+			r.mu.Unlock()
+		}()
+		opts := export.Options{Format: format, ProgressRows: 500, ProgressEvery: 250 * time.Millisecond, Progress: func(p export.Progress) error {
+			return r.send(protocol.Event{Version: 1, Type: "result", RequestID: req.RequestID, Op: "export", Handle: req.Handle, ExportID: exportID, Progress: true, RowCount: p.Rows, Bytes: p.BytesWritten})
+		}}
+		var stats export.Stats
+		var exportErr error
+		if req.Scope == "full" {
+			store, storeErr := r.metadataStore(req.StorePath)
+			if storeErr != nil {
+				exportErr = storeErr
+			} else {
+				if meta.ConnectionID != "" {
+					current, getErr := store.Get(meta.ConnectionID)
+					if getErr != nil {
+						exportErr = errors.New("connection metadata was deleted")
+					} else if !sameConnection(meta.Connection, current) {
+						exportErr = errors.New("connection metadata changed since execution")
+					}
+				}
+				if exportErr == nil {
+					streamReq := protocol.Request{Version: 1, Type: "execute", RequestID: req.RequestID, ExecutionID: exportID, ConnectionID: meta.ConnectionID, Connection: meta.Connection, SQL: meta.OriginalSQL}
+					stats, exportErr = export.ExportStream(ctx, req.Path, opts, func(cb export.StreamCallbacks) error {
+						_, streamErr := executor.Stream(ctx, streamReq, store.Resolve, executor.StreamSink{
+							OnSchema: func(set int, columns []protocol.Column) error { return cb.Schema(columns) },
+							OnRow:    func(set int, row []protocol.Cell) error { return cb.Row(ctx, row) },
+						}, executor.StreamOptions{})
+						return streamErr
+					})
+				}
+			}
+		} else if req.Scope == "retained" || req.Scope == "filtered" {
+			rows := snap.Rows
+			if req.Scope == "filtered" && (req.Filter != "" || req.Expression != "") {
+				expression := req.Filter
+				if expression == "" {
+					expression = req.Expression
+				}
+				viewID, _, filterErr := r.results.Filter(req.Handle, expression)
+				if filterErr != nil {
+					exportErr = filterErr
+				} else {
+					filtered, _, pageErr := r.results.PageView(req.Handle, viewID, 0, int(^uint(0)>>1))
+					if pageErr != nil {
+						exportErr = pageErr
+					} else {
+						rows = filtered.Rows
+					}
+				}
+			} else if req.Scope == "filtered" && req.ViewID != "" {
+				view, _, pageErr := r.results.PageView(req.Handle, req.ViewID, 0, int(^uint(0)>>1))
+				if pageErr != nil {
+					exportErr = pageErr
+				} else {
+					rows = view.Rows
+				}
+			}
+			if exportErr == nil {
+				stats, exportErr = export.ExportCurrent(ctx, req.Path, meta.Columns, rows, opts)
+			}
+		} else {
+			exportErr = errors.New("invalid export scope")
+		}
+		if exportErr != nil {
+			_ = r.send(protocol.Event{Version: 1, Type: "error", RequestID: req.RequestID, Op: "export", ExportID: exportID, Code: "export", Message: exportErr.Error(), Terminal: true})
+			return
+		}
+		_ = r.send(protocol.Event{Version: 1, Type: "result", RequestID: req.RequestID, Op: "export", Handle: req.Handle, ExportID: exportID, Path: req.Path, RowCount: stats.Rows, Bytes: stats.BytesWritten, Terminal: true})
+	}()
+	return nil
+}
+
 func main() {
-	r := &runner{active: map[string]context.CancelFunc{}}
+	r := &runner{active: map[string]context.CancelFunc{}, results: results.New(results.Options{}), exports: map[string]context.CancelFunc{}, exportOwner: map[string]string{}}
 	_ = r.send(protocol.Event{Version: 1, Type: "ready", RunnerVersion: runnerVersion})
 	d := protocol.NewDecoder(os.Stdin, 2*1024*1024)
 	for {
@@ -199,6 +544,8 @@ func main() {
 			if c != nil {
 				c()
 			}
+		case "result":
+			r.result(req)
 		case "shutdown":
 			r.shutdown()
 			return
@@ -213,9 +560,17 @@ func (r *runner) shutdown() {
 	for _, c := range r.active {
 		c()
 	}
+	for _, c := range r.exports {
+		c()
+	}
 	r.mu.Unlock()
+	done := make(chan struct{})
+	go func() { r.exportWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+	}
 	if r.store != nil {
 		_ = r.store.Close()
 	}
-	time.Sleep(5 * time.Millisecond)
 }

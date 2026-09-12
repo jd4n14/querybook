@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/jd4n14/querybook/internal/connections"
 	"github.com/jd4n14/querybook/internal/policy"
 	"github.com/jd4n14/querybook/internal/protocol"
 	_ "modernc.org/sqlite"
@@ -47,8 +48,14 @@ func limits(r protocol.Request) Limits {
 }
 
 type Result struct {
-	Columns       []protocol.Column
-	Rows          [][]protocol.Cell
+	Columns []protocol.Column
+	Rows    [][]protocol.Cell
+	// ExecutedSQL preserves the exact SQL sent to the driver, including an
+	// automatic top-level LIMIT when one was applied. Connection is the
+	// execution-time metadata snapshot with no credential material.
+	ExecutedSQL   string
+	Connection    protocol.Connection
+	ConnectionID  string
 	Observed      int64
 	RetainedBytes int64
 	Truncated     bool
@@ -105,33 +112,51 @@ func cellFrom(v any, typ string) protocol.Cell {
 		// MySQL exposes values as bytes. Binary column names/types and invalid
 		// UTF-8 are retained as reversible base64; all valid text remains text.
 		if isBinaryType(typ) || strings.IndexByte(string(x), 0) >= 0 || !utf8Valid(x) {
-			return protocol.BinaryCell(x)
+			cell := protocol.BinaryCell(x)
+			cell.ValueKind = "binary"
+			return cell
 		}
-		return protocol.TextCell(string(x))
+		cell := protocol.TextCell(string(x))
+		cell.ValueKind = "string"
+		return cell
 	case string:
-		return protocol.TextCell(x)
+		cell := protocol.TextCell(x)
+		cell.ValueKind = "string"
+		return cell
 	case int64:
-		return protocol.TextCell(strconv.FormatInt(x, 10))
+		cell := protocol.TextCell(strconv.FormatInt(x, 10))
+		cell.ValueKind = "integer"
+		return cell
 	case uint64:
-		return protocol.TextCell(strconv.FormatUint(x, 10))
+		cell := protocol.TextCell(strconv.FormatUint(x, 10))
+		cell.ValueKind = "unsigned"
+		return cell
 	case int:
-		return protocol.TextCell(strconv.Itoa(x))
+		cell := protocol.TextCell(strconv.Itoa(x))
+		cell.ValueKind = "integer"
+		return cell
 	case float64:
-		return protocol.TextCell(strconv.FormatFloat(x, 'g', -1, 64))
+		cell := protocol.TextCell(strconv.FormatFloat(x, 'g', -1, 64))
+		cell.ValueKind = "float"
+		return cell
 	case bool:
+		cell := protocol.TextCell("0")
 		if x {
-			return protocol.TextCell("1")
+			cell.Text = "1"
 		}
-		return protocol.TextCell("0")
+		cell.ValueKind = "boolean"
+		return cell
 	default:
-		return protocol.TextCell(fmt.Sprint(x))
+		cell := protocol.TextCell(fmt.Sprint(x))
+		cell.ValueKind = "string"
+		return cell
 	}
 }
 
 func utf8Valid(v []byte) bool { return utf8.Valid(v) }
 func isBinaryType(t string) bool {
 	t = strings.ToLower(t)
-	for _, x := range []string{"blob", "binary", "varbinary", "longblob", "mediumblob", "tinyblob"} {
+	for _, x := range []string{"blob", "binary", "varbinary", "longblob", "mediumblob", "tinyblob", "bit"} {
 		if strings.Contains(t, x) {
 			return true
 		}
@@ -150,6 +175,11 @@ func TestConnection(ctx context.Context, resolve Resolver, id string) error {
 	c, password, err := resolve(id)
 	if err != nil {
 		return err
+	}
+	if c.Driver == "sqlite" {
+		if err := connections.CheckSQLitePath(c.Path); err != nil {
+			return err
+		}
 	}
 	dsnv, err := dsnWithPassword(c, password)
 	if err != nil {
@@ -192,6 +222,15 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 	}
 	if err != nil {
 		return Result{}, err
+	}
+	// Keep the resolved metadata in the result so the runner can publish an
+	// execution-time snapshot even if a connection is edited or deleted before
+	// the asynchronous execution goroutine emits result_end.
+	resultConnection := c
+	if c.Driver == "sqlite" && !req.Force {
+		if err := connections.CheckSQLitePath(c.Path); err != nil {
+			return Result{}, err
+		}
 	}
 	dsnv, err := dsnWithPassword(c, password)
 	if err != nil {
@@ -240,7 +279,7 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 		if err := emit(protocol.Event{Version: 1, Type: "result_start", RequestID: req.RequestID, ExecutionID: req.ExecutionID, Generation: req.Generation, ResultSet: 0, Columns: []protocol.Column{}}); err != nil {
 			return Result{}, err
 		}
-		return Result{ResultSets: 1, Affected: affected}, nil
+		return Result{ResultSets: 1, Affected: affected, ExecutedSQL: req.SQL, Connection: resultConnection, ConnectionID: req.ConnectionID}, nil
 	}
 	executedSQL, autoLimit := addAutoLimit(req.SQL)
 	if tx != nil {
@@ -253,7 +292,7 @@ func execute(ctx context.Context, req protocol.Request, resolve Resolver, emit e
 	}
 	defer rows.Close()
 	l := limits(req)
-	out := Result{}
+	out := Result{ExecutedSQL: executedSQL, Connection: resultConnection, ConnectionID: req.ConnectionID}
 	out.AutoLimit = autoLimit
 	if autoLimit {
 		out.AutoLimitWhy = "top-level SELECT had no explicit LIMIT"

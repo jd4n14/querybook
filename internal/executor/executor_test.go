@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jd4n14/querybook/internal/protocol"
+	"github.com/jd4n14/querybook/internal/results"
 	_ "modernc.org/sqlite"
 )
 
@@ -60,6 +62,80 @@ func TestSQLitePositionalExactResultsAndGuard(t *testing.T) {
 	}
 }
 
+func TestSQLiteExpressionRuntimeKindsDriveExactFilters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-kinds.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE seed (n INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	queries := []struct {
+		name string
+		sql  string
+		want string
+	}{
+		{"expression", "SELECT 12 + 1 AS n", "integer"},
+		{"cte", "WITH x AS (SELECT 12 AS n) SELECT n FROM x", "integer"},
+		{"text", "SELECT '001' AS n UNION ALL SELECT '11' AS n", "string"},
+	}
+	for _, tc := range queries {
+		t.Run(tc.name, func(t *testing.T) {
+			req := protocol.Request{Version: 1, Type: "execute", RequestID: tc.name, ExecutionID: tc.name, Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: tc.sql}
+			got, err := Execute(context.Background(), req, func(protocol.Event) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Rows) == 0 || len(got.Rows[0]) != 1 {
+				t.Fatalf("rows=%#v", got.Rows)
+			}
+			if got.Rows[0][0].ValueKind != tc.want {
+				t.Fatalf("value kind=%q want %q cell=%#v", got.Rows[0][0].ValueKind, tc.want, got.Rows[0][0])
+			}
+			if got.Columns[0].DatabaseType != "" {
+				t.Fatalf("expression invented database type %q", got.Columns[0].DatabaseType)
+			}
+			r := results.New(results.Options{MaxBytes: 1 << 20, MaxSets: 1})
+			id, err := r.Retain(results.Metadata{Columns: got.Columns}, got.Rows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "integer" {
+				view, count, err := r.Filter(id, "@.n >= 11")
+				if err != nil || count != 1 || view == "" {
+					t.Fatalf("numeric filter view=%q count=%d err=%v", view, count, err)
+				}
+			} else {
+				if _, count, err := r.Filter(id, "@.n >= 11"); err != nil || count != 0 {
+					t.Fatalf("text accepted numeric predicate count=%d err=%v", count, err)
+				}
+				if _, count, err := r.Filter(id, `@.n == "001"`); err != nil || count != 1 {
+					t.Fatalf("text equality count=%d err=%v", count, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCellFromUsesDriverRuntimeKindWithoutInventingBooleans(t *testing.T) {
+	if got := cellFrom(int64(1), "TINYINT(1)"); got.ValueKind != "integer" || got.Text != "1" {
+		t.Fatalf("MySQL integer runtime kind=%#v", got)
+	}
+	if got := cellFrom("001", "INTEGER"); got.ValueKind != "string" || got.Text != "001" {
+		t.Fatalf("text runtime kind=%#v", got)
+	}
+	if got := cellFrom(true, "BOOLEAN"); got.ValueKind != "boolean" || got.Text != "1" {
+		t.Fatalf("boolean runtime kind=%#v", got)
+	}
+	if got := cellFrom([]byte{0, 1}, "BIT"); got.Kind != "binary" || got.ValueKind != "binary" {
+		t.Fatalf("binary runtime kind=%#v", got)
+	}
+}
+
 func TestSQLiteSchemaAndRetention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.db")
 	db, err := sql.Open("sqlite", path)
@@ -100,6 +176,13 @@ func TestSQLiteSchemaAndRetention(t *testing.T) {
 
 func TestBatchByteLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 	req := protocol.Request{Version: 1, Type: "execute", RequestID: "r", ExecutionID: "e", Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: "SELECT printf('%0*d', 100, 0)", MaxRetainedBytes: 4096, BatchBytes: 32, BatchRows: 10}
 	if _, err := Execute(context.Background(), req, func(protocol.Event) error { return nil }); err == nil {
 		t.Fatal("oversized batch row accepted")
@@ -123,6 +206,32 @@ func TestSQLiteDriverReadOnlyBoundaryRejectsWrite(t *testing.T) {
 	}
 	if _, err = conn.ExecContext(context.Background(), "CREATE TABLE blocked(v TEXT)"); err == nil {
 		t.Fatal("SQLite query_only boundary allowed a write")
+	}
+}
+
+func TestSQLiteConnectionTestDoesNotCreateMissingDatabase(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "missing.sqlite3")
+	err := TestConnection(context.Background(), func(string) (protocol.Connection, []byte, error) {
+		return protocol.Connection{Name: "missing", Driver: "sqlite", Path: path}, nil, nil
+	}, "missing")
+	if err == nil || !strings.HasPrefix(err.Error(), "sqlite_database_missing:") {
+		t.Fatalf("missing database error=%v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("connection test created %s: %v", path, statErr)
+	}
+}
+
+func TestSQLiteReadDoesNotCreateMissingDatabase(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "missing.sqlite3")
+	req := protocol.Request{Version: 1, Type: "execute", RequestID: "r", ExecutionID: "e", Connection: protocol.Connection{Driver: "sqlite", Path: path}, SQL: "SELECT 1"}
+	if _, err := Execute(context.Background(), req, func(protocol.Event) error { return nil }); err == nil || !strings.HasPrefix(err.Error(), "sqlite_database_missing:") {
+		t.Fatalf("missing database error=%v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("read created %s: %v", path, statErr)
 	}
 }
 

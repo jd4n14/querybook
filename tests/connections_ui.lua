@@ -16,7 +16,9 @@ local function request(op, payload)
   return result
 end
 
-local path = vim.fn.tempname() .. ".sqlite3"
+-- :memory: is an existing SQLite target, so this manager smoke test does not
+-- create a fixture database or rely on a user's filesystem.
+local path = ":memory:"
 local created = request("create", { connection = { name = "UI smoke", driver = "sqlite", path = path } })
 assert(created.connection and created.connection.id, "create returns managed UUID")
 local id = created.connection.id
