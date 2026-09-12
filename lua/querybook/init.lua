@@ -104,6 +104,7 @@ local function refresh_stale(bufnr)
         local changed = statement_text(bufnr, statement) ~= result.query
         if result.status ~= "error" then result.status = changed and "stale" or "success" end
         render_result(bufnr, result)
+        if M._inspect_state and M._inspect_state.result == result then inspect_view.sync(M._inspect_state) end
       end
     end
   end

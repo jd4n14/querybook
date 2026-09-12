@@ -6,11 +6,14 @@ build:
 test:
 	go test ./internal/...
 	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/run.lua; fi
+	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/inspect_ui.lua; fi
 	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/connections_ui.lua; fi
 
 test-integration:
 	go test -tags=integration ./internal/...
 	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/run.lua; fi
+	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/inspect_ui.lua; fi
+	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/inspect_real.lua; fi
 	@if command -v nvim >/dev/null 2>&1; then nvim --headless -u NONE -c "set rtp^=$$PWD" -l tests/connections_ui.lua; fi
 
 runner_path:

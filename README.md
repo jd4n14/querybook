@@ -108,17 +108,18 @@ preview override when `preview_rows` is not set. The inline result table fills
 the current window and clips cell values to the allocated column width. Hidden
 row and column pages are labelled with the current range. The runner retains at most `max_retained_rows` rows or
 `max_retained_bytes` bytes (defaults 10000 and 16 MiB), and labels truncation.
-`QuerybookInspect` opens a vertical, navigable view with connection profile
-and database captured at execution time. It keeps an opaque result handle and
-requests pages from the runner, so inspecting a large retained result does not
-copy every row into Lua. `[r`/`]r` move through matching rows and `[p`/`]p`
-move through matching pages. `Enter` or `za` expands a JSON field lazily when
-its column metadata is structured; `gR` toggles raw/formatted presentation.
-`K` shows the actual source metadata for the field and `gQ` shows the full SQL
-when the compact header truncates it.
-`yv` copies the exact field value, `yr` copies the exact row as ordered JSON
-(including `null`), and `yp` copies the complete payload; all three use the
-retained typed cells, so decimals and large integers do not round.
+`QuerybookInspect` opens a floating, navigable view with connection profile
+and database captured at execution time. It walks the already retained
+matching rows (and their original source ordinals) without re-running SQL or
+JSONPath. `[r`/`]r` move through matching rows, including across grid page
+boundaries, and `[p`/`]p` jump matching pages. `p` pins the current source
+row. `Enter` or `za` expands a JSON field lazily; `gR` toggles raw/formatted
+presentation for that cell. `K` shows driver column metadata (type, nullable,
+size) and `gQ` shows the full SQL when the compact header truncates it.
+`yv` copies the exact field value, `yn` the column name, `yj` the JSONPath of
+the current node, `yr` the exact row as ordered JSON (including `null`), and
+`yp` the complete payload. Copies use retained typed cells, so decimals and
+large integers do not round.
 
 `:QuerybookFilter` sends a JSONPath expression to the runner and evaluates it
 locally against every retained row. Shorthand starting with `@` is wrapped as

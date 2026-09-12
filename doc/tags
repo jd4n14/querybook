@@ -1,10 +1,17 @@
 :QuerybookClear	querybook.txt	/*:QuerybookClear*
 :QuerybookClear!	querybook.txt	/*:QuerybookClear!*
+:QuerybookClearFilter	querybook.txt	/*:QuerybookClearFilter*
+:QuerybookCompareRows	querybook.txt	/*:QuerybookCompareRows*
 :QuerybookConnections	querybook.txt	/*:QuerybookConnections*
 :QuerybookConnectionsImport	querybook.txt	/*:QuerybookConnectionsImport*
+:QuerybookExportFiltered	querybook.txt	/*:QuerybookExportFiltered*
+:QuerybookExportFull	querybook.txt	/*:QuerybookExportFull*
+:QuerybookExportRetained	querybook.txt	/*:QuerybookExportRetained*
+:QuerybookFilter	querybook.txt	/*:QuerybookFilter*
 :QuerybookInspect	querybook.txt	/*:QuerybookInspect*
 :QuerybookNextColumn	querybook.txt	/*:QuerybookNextColumn*
 :QuerybookNextPage	querybook.txt	/*:QuerybookNextPage*
+:QuerybookPinRow	querybook.txt	/*:QuerybookPinRow*
 :QuerybookPrevColumn	querybook.txt	/*:QuerybookPrevColumn*
 :QuerybookPrevPage	querybook.txt	/*:QuerybookPrevPage*
 :QuerybookRefresh	querybook.txt	/*:QuerybookRefresh*
@@ -14,6 +21,7 @@ Querybook	querybook.txt	/*Querybook*
 querybook-commands	querybook.txt	/*querybook-commands*
 querybook-config	querybook.txt	/*querybook-config*
 querybook-inspector	querybook.txt	/*querybook-inspector*
+querybook-jsonpath	querybook.txt	/*querybook-jsonpath*
 querybook-transport	querybook.txt	/*querybook-transport*
 querybook.contents	querybook.txt	/*querybook.contents*
 querybook.txt	querybook.txt	/*querybook.txt*

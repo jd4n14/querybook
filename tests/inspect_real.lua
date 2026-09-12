@@ -49,9 +49,12 @@ for line, location in pairs(view.locations or {}) do
   if location.kind == "field" and location.column == 6 then vim.api.nvim_win_set_cursor(view.win, { line, 0 }); break end
 end
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "x", false)
-assert(vim.wait(1000, function() return table.concat(vim.api.nvim_buf_get_lines(view.buf, 0, -1, false), "\n"):find('"n":', 1, true) ~= nil end), "real inspector expands Go JSON tree")
+assert(vim.wait(1000, function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(view.buf, 0, -1, false), "\n")
+  return text:find("▼", 1, true) ~= nil and text:find("900719925474099312345", 1, true) ~= nil
+end), "real inspector expands Go JSON tree")
 for line, value in ipairs(vim.api.nvim_buf_get_lines(view.buf, 0, -1, false)) do
-  if value:find('"n":', 1, true) then vim.api.nvim_win_set_cursor(view.win, { line, 0 }); break end
+  if value:find("900719925474099312345", 1, true) and not value:find("payload", 1, true) then vim.api.nvim_win_set_cursor(view.win, { line, 0 }); break end
 end
 vim.api.nvim_feedkeys(vim.keycode("za"), "x", false)
 assert(table.concat(vim.api.nvim_buf_get_lines(view.buf, 0, -1, false), "\n"):find("900719925474099312345", 1, true), "real inspector nested tree preserves numeric lexeme")
@@ -59,7 +62,10 @@ for line, location in pairs(view.locations or {}) do
   if location.kind == "field" and location.column == 6 then vim.api.nvim_win_set_cursor(view.win, { line, 0 }); break end
 end
 vim.api.nvim_feedkeys(vim.keycode("gR"), "x", false)
-assert(vim.wait(1000, function() return table.concat(vim.api.nvim_buf_get_lines(view.buf, 0, -1, false), "\n"):find("payload [structured] (raw)", 1, true) ~= nil end), "real inspector raw/formatted toggle uses live cell")
+assert(vim.wait(1000, function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(view.buf, 0, -1, false), "\n")
+  return text:find("payload", 1, true) ~= nil and text:find("(raw)", 1, true) ~= nil
+end), "real inspector raw/formatted toggle uses live cell")
 for line, location in pairs(view.locations or {}) do
   if location.kind == "field" and location.column == 5 then vim.api.nvim_win_set_cursor(view.win, { line, 0 }); break end
 end

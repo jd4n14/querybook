@@ -16,9 +16,10 @@ COMMANDS                                                        *querybook-comma
     to explicitly allow a write blocked by the basic safety guard.
 
 :QuerybookInspect                                             *:QuerybookInspect*
-    Open the retained result in a vertical scratch view. The view requests
-    handle based pages from the runner and includes execution SQL, profile,
-    driver, database, matching/source row positions, and full field values.
+    Open the retained result in a floating scratch view. Inspect navigates the
+    already retained matching rows (not a fresh SQL execution) and includes
+    execution SQL, profile, database, matching/source/page positions, and
+    compact field values. Structured cells expand lazily.
 
 :QuerybookFilter                                               *:QuerybookFilter*
     Prompt for a JSONPath or shorthand expression and apply it locally to every
@@ -83,25 +84,37 @@ INSPECTOR                                                     *querybook-inspect
 
 In a QuerybookInspect scratch window, use these normal-mode mappings:
 
-    [r / ]r      Move to the previous or next matching row.
-    [p / ]p      Move to the previous or next matching page.
+    [r / ]r      Move to the previous or next matching row. With a local
+                JSONPath filter this walks matching rows and keeps the original
+                source ordinal. Page boundaries are crossed inside Inspect.
+    [p / ]p      Jump to the first matching row of the previous or next page.
+    p            Pin or unpin the current source row. The pinned ordinal stays
+                visible while you keep navigating; full column-diff UI is still
+                :QuerybookCompareRows.
     Enter / za   Expand or collapse the JSON node under the cursor lazily.
-    gR           Toggle raw/formatted display for the current field.
-    K            Show the actual source column metadata (type and nullable).
+    gR           Toggle raw/formatted display for the current cell or node.
+    K            Show driver column metadata (name, SQL type, nullable, size).
     gQ           Show the full execution SQL when the compact header truncates it.
     yv          Copy the exact field value under the cursor. SQL NULL is copied
                 as the textual marker NULL; row and payload copies retain its
                 null type.
+    yn          Copy the column or JSON node name.
+    yj          Copy the JSONPath of the current JSON node (for example
+                $.products[0].price).
     yr          Copy the current row as ordered JSON, preserving values as
                 strings and SQL NULL as JSON null.
     yp          Copy the complete result payload as ordered JSON.
     q           Close the inspector window.
 
-JSON fields are expanded lazily only when their column metadata identifies a
-structured type. Copy operations use retained typed cells, so tabs, newlines,
-Unicode, decimals, and large integers are not rounded or clipped. A stale
-result continues to show its captured SQL and connection snapshot; a new
-successful execution creates a fresh handle and clears inspector state.
+Fields are compact: SQL types are not repeated on every line. ▶ / ▼ mark
+expandable structured values; ◆ is reserved for a primary key when the driver
+supplies that fact. SQL NULL, empty string (""), 0, false, and JSON null keep
+distinct labels. JSON is collapsed by default and parsed only when expanded;
+the ResultSet cell is never replaced by the parsed tree. Copy operations use
+retained typed cells, so tabs, newlines, Unicode, decimals, and large integers
+are not rounded or clipped. A stale result continues to show its captured SQL
+and connection snapshot; a new successful execution creates a fresh handle and
+clears inspector state.
 
 JSONPATH FILTER                                              *querybook-jsonpath*
 
