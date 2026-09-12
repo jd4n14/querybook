@@ -11,7 +11,7 @@ local state = {}
 local defaults = {
   active_connection = nil,
   connections = {},
-	preview_rows = 10,
+  preview_rows = 10,
   max_columns = 12,
   max_value_length = 128,
   max_column_width = 32,
@@ -59,38 +59,38 @@ end
 local remove_result
 
 local function refresh_stale(bufnr)
-	local current = parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
-	local attached = {}
-	for _, result in pairs(buffer_state(bufnr).results) do
-		local line = result_position(bufnr, result)
-		local statement = line and parser.statement_at(current, line)
-		if not statement then
-			if result.handle then result.handle.cancel() end
-			remove_result(bufnr, result)
-		else
-			-- Buffer-wide edits can collapse several old extmarks onto one new
-			-- statement. Keep the newest execution as that statement's one slot.
-			local key = statement.start_line .. ":" .. statement.end_line
-			if attached[key] then
-				local duplicate = attached[key]
-				if duplicate.id < result.id then
-					if duplicate.handle then duplicate.handle.cancel() end
-					remove_result(bufnr, duplicate)
-					attached[key] = result
-				else
-					if result.handle then result.handle.cancel() end
-					remove_result(bufnr, result)
-				end
-			else
-				attached[key] = result
-			end
-			if attached[key] == result then
-				local changed = statement_text(bufnr, statement) ~= result.query
-				if result.status ~= "error" then result.status = changed and "stale" or "success" end
-				render_result(bufnr, result)
-			end
-		end
-	end
+  local current = parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  local attached = {}
+  for _, result in pairs(buffer_state(bufnr).results) do
+    local line = result_position(bufnr, result)
+    local statement = line and parser.statement_at(current, line)
+    if not statement then
+      if result.handle then result.handle.cancel() end
+      remove_result(bufnr, result)
+    else
+      -- Buffer-wide edits can collapse several old extmarks onto one new
+      -- statement. Keep the newest execution as that statement's one slot.
+      local key = statement.start_line .. ":" .. statement.end_line
+      if attached[key] then
+        local duplicate = attached[key]
+        if duplicate.id < result.id then
+          if duplicate.handle then duplicate.handle.cancel() end
+          remove_result(bufnr, duplicate)
+          attached[key] = result
+        else
+          if result.handle then result.handle.cancel() end
+          remove_result(bufnr, result)
+        end
+      else
+        attached[key] = result
+      end
+      if attached[key] == result then
+        local changed = statement_text(bufnr, statement) ~= result.query
+        if result.status ~= "error" then result.status = changed and "stale" or "success" end
+        render_result(bufnr, result)
+      end
+    end
+  end
 end
 
 local function find_current_result(bufnr, statement)
@@ -121,105 +121,9 @@ remove_result = function(bufnr, result)
   buffer_state(bufnr).results[result.id] = nil
 end
 
-local function json_string(value)
-  if vim.json and vim.json.encode then return vim.json.encode(tostring(value)) end
-  return '"' .. tostring(value):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r"):gsub("\t", "\\t") .. '"'
-end
-
-local function row_payload(result, row)
-  local fields = {}
-  for index, column in ipairs(result.columns or {}) do
-    local value, is_null, cell = render.value(row, index)
-    fields[#fields + 1] = { column = type(column) == "table" and column.name or tostring(column), value = is_null and vim.NIL or value, encoding = (cell and cell.kind == "binary") and "base64" or "text" }
-  end
-  return vim.json.encode(fields)
-end
-
-local function full_payload(result)
-  local rows = {}
-  for _, row in ipairs(result.rows or {}) do rows[#rows + 1] = row_payload(result, row) end
-  local columns = {}; for _, column in ipairs(result.columns or {}) do columns[#columns + 1] = type(column) == "table" and column or { name = tostring(column) } end
-  return vim.json.encode({ connection = result.connection_name or "connection", database = result.database or "", columns = columns, rows = vim.tbl_map(vim.json.decode, rows), truncated = result.truncated or false, truncation_reason = result.truncation_reason, auto_limit_applied = result.auto_limit_applied or false })
-end
-
-local function pretty_json(value)
-  local lines, line, depth, quoted, escaped = {}, "", 0, false, false
-  local function push()
-    if line ~= "" then lines[#lines + 1] = string.rep("  ", depth) .. line; line = "" end
-  end
-  for i = 1, #value do
-    local char = value:sub(i, i)
-    if quoted then
-      line = line .. char
-      if escaped then escaped = false elseif char == "\\" then escaped = true elseif char == '"' then quoted = false end
-    elseif char == '"' then quoted, line = true, line .. char
-    elseif char:match("%s") then
-      -- JSON whitespace outside strings is formatting noise.
-    elseif char == "{" or char == "[" then
-      line = line .. char; push(); depth = depth + 1
-    elseif char == "}" or char == "]" then
-      push(); depth = math.max(0, depth - 1); line = char
-    elseif char == "," then
-      line = line .. char; push()
-    elseif char == ":" then
-      line = line .. ": "
-    else
-      line = line .. char
-    end
-  end
-  push()
-  return lines
-end
-
-local function copy_register(text)
-  vim.fn.setreg('"', text)
-  pcall(vim.fn.setreg, "+", text)
-  vim.notify("Querybook: copied " .. (#text) .. " characters", vim.log.levels.INFO)
-end
-
-local function inspect_content(result)
-  local content, locations = {}, {}
-  local function add(line, location)
-    content[#content + 1] = line
-    locations[#content] = location
-  end
-  for _, query_line in ipairs(vim.split("-- " .. result.status .. " · " .. result.query, "\n", { plain = true })) do add(query_line) end
-  add("connection: " .. tostring(result.connection_name or "connection"))
-  add("driver: " .. tostring(result.connection_driver or "unknown"))
-  add("database: " .. tostring(result.database or "(none)"))
-	add("rows: " .. tostring(#(result.rows or {})) .. " · columns: " .. tostring(#(result.columns or {})) .. (result.truncated and " · truncated" or ""))
-	if result.auto_limit_applied then add("execution: automatic outer LIMIT 500 applied") end
-	if result.status == "error" then
-		add(result.error or "query failed")
-		if result.previous_query then add("previous successful result retained from: " .. result.previous_query) end
-	end
-  for row_index, row in ipairs(result.rows or {}) do
-    add("", nil)
-    add("row " .. row_index, { kind = "row", row = row_index })
-    for column_index, column in ipairs(result.columns or {}) do
-      local value, is_null, cell = render.value(row, column_index)
-      local text = is_null and "NULL" or tostring(value)
-      local column_name = type(column) == "table" and column.name or tostring(column)
-      if cell and cell.kind == "binary" then text = "base64:" .. text end
-      local is_json = not is_null and text:match("^%s*[%[{].*[%]}]%s*$")
-      if is_json then
-        add("  " .. column_name .. " (JSON):", { kind = "field", row = row_index, column = column_index })
-        local pretty = pretty_json(text)
-        for _, line in ipairs(pretty) do add("    " .. line, { kind = "field", row = row_index, column = column_index }) end
-      else
-        local value_lines = vim.split(text, "\n", { plain = true })
-        add("  " .. column_name .. ": " .. (value_lines[1] or ""), { kind = "field", row = row_index, column = column_index })
-        for line_index = 2, #value_lines do add("    " .. value_lines[line_index], { kind = "field", row = row_index, column = column_index }) end
-      end
-    end
-  end
-  if #result.rows == 0 then add("(no rows)", nil) end
-  return content, locations
-end
-
 function M.run(opts)
-	local bufnr = vim.api.nvim_get_current_buf()
-	refresh_stale(bufnr)
+  local bufnr = vim.api.nvim_get_current_buf()
+  refresh_stale(bufnr)
   local queries = {}
   if opts and opts.range and opts.range > 0 then
     local lines = vim.api.nvim_buf_get_lines(bufnr, opts.line1 - 1, opts.line2, false)
@@ -250,91 +154,91 @@ function M.run(opts)
     end
   end
   local function execute_queries(conn)
-  runner.setup(M.config)
-  local name = conn.connection_id or conn.id
-  local display_name = conn.name or name
-  if not name then return vim.notify("Querybook: active connection has no id", vim.log.levels.ERROR) end
-	local bs = buffer_state(bufnr)
-	if not vim.b[bufnr].querybook_viewport_maps then
-		vim.keymap.set("n", "<leader>qN", "<Cmd>QuerybookNextPage<CR>", { buffer = bufnr, silent = true, desc = "Querybook: next result page" })
-		vim.keymap.set("n", "<leader>qP", "<Cmd>QuerybookPrevPage<CR>", { buffer = bufnr, silent = true, desc = "Querybook: previous result page" })
-		vim.keymap.set("n", "<leader>qL", "<Cmd>QuerybookNextColumn<CR>", { buffer = bufnr, silent = true, desc = "Querybook: next result columns" })
-		vim.keymap.set("n", "<leader>qH", "<Cmd>QuerybookPrevColumn<CR>", { buffer = bufnr, silent = true, desc = "Querybook: previous result columns" })
-		vim.b[bufnr].querybook_viewport_maps = true
-	end
-	local function execute_one(item)
-		local old = find_current_result(bufnr, { start_line = item.anchor, end_line = item.anchor })
-		local previous_query = old and (old.last_successful_query or old.query)
-		local previous_truncated = old and old.truncated
-		local previous_truncation_reason = old and old.truncation_reason
-		if old and old.handle then old.handle.cancel(); old.handle = nil end
-		local result
-		if old then
-			-- One statement owns one result slot. Reusing the extmark prevents a
-			-- failed retry from stacking another ERROR block below the query.
-			result = old
-			result.generation = (result.generation or 0) + 1
-			result.query, result.status, result.error = item.query, "running", nil
-			result.previous_query = nil
-			result.connection_name, result.connection_profile, result.connection_driver = display_name, display_name, conn.driver
-			result.database, result.duration_ms = conn.database or conn.path, 0
-			result.auto_limit_applied, result.auto_limit_reason, result.truncated, result.truncation_reason = nil, nil, false, nil
-		else
-			bs.next_id = bs.next_id + 1
-			result = {
-				id = bs.next_id, query = item.query, status = "running", rows = {}, columns = {}, generation = 1,
-				connection_name = display_name, connection_profile = display_name, connection_driver = conn.driver,
-				database = conn.database or conn.path, duration_ms = 0, row_offset = 0, column_offset = 0,
-			}
-			result.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, item.anchor - 1, 0, { right_gravity = false, virt_lines = render.lines(result, M.config), virt_lines_above = false, virt_lines_leftcol = true })
-			bs.results[result.id] = result
-		end
-		render_result(bufnr, result)
-		local started = vim.loop.hrtime()
-		local run_generation = result.generation
-		result.handle = runner.run(name, item.query, { force = (opts and opts.force) or M.config.allow_writes, generation = run_generation }, function(data, err)
-			if result.generation ~= run_generation or bs.results[result.id] ~= result then return end
-			result.duration_ms = math.floor((vim.loop.hrtime() - started) / 1000000)
-			result.handle = nil
-			if err then
-				result.status, result.error = "error", err
-				if M._inspect_state and M._inspect_state.result == result then M._inspect_state.generation = result.generation end
-				result.previous_query = (#(result.rows or {}) > 0 or #(result.columns or {}) > 0) and previous_query or nil
-				result.truncated, result.truncation_reason = previous_truncated or false, previous_truncation_reason
-			else
-				result.status, result.rows, result.columns = "success", data.rows or {}, data.columns or {}
-				local previous_handle = result.result_handle
-				result.result_handle = data.result_handle or data.handle
-				if previous_handle and previous_handle ~= result.result_handle and runner.result then
-					runner.result("release", { result_handle = previous_handle }, function() end)
-				end
-				-- The runner may attach the authoritative execution snapshot. Keep
-				-- that metadata with this result even if the manager selection changes.
-				local snapshot = data.connection or data.connection_metadata
-				if type(snapshot) == "table" then
-					result.connection_name = snapshot.name or result.connection_name
-					result.connection_profile = result.connection_name
-					result.connection_driver = snapshot.driver or result.connection_driver
-					result.database = snapshot.database or snapshot.path or result.database
-				end
-				result.previous_query = nil
-				result.last_successful_query = item.query
-				result.auto_limit_applied, result.auto_limit_reason = data.auto_limit_applied, data.auto_limit_reason
-				result.truncated, result.truncation_reason = data.truncated, data.truncation_reason
-				-- A successful execution gets a fresh immutable registry handle and
-				-- therefore cannot retain a prior filtered view or inspector state.
-				result.view_active, result.view_id, result.filter_expression, result.view_source_rows, result.view_count = false, nil, nil, nil, nil
-				result.row_offset, result.column_offset = 0, 0
-				if M._inspect_state and M._inspect_state.result == result then
-					M._inspect_state.closed = true
-					if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
-					M._inspect_state = nil
-				end
-			end
+    runner.setup(M.config)
+    local name = conn.connection_id or conn.id
+    local display_name = conn.name or name
+    if not name then return vim.notify("Querybook: active connection has no id", vim.log.levels.ERROR) end
+    local bs = buffer_state(bufnr)
+    if not vim.b[bufnr].querybook_viewport_maps then
+      vim.keymap.set("n", "<leader>qN", "<Cmd>QuerybookNextPage<CR>", { buffer = bufnr, silent = true, desc = "Querybook: next result page" })
+      vim.keymap.set("n", "<leader>qP", "<Cmd>QuerybookPrevPage<CR>", { buffer = bufnr, silent = true, desc = "Querybook: previous result page" })
+      vim.keymap.set("n", "<leader>qL", "<Cmd>QuerybookNextColumn<CR>", { buffer = bufnr, silent = true, desc = "Querybook: next result columns" })
+      vim.keymap.set("n", "<leader>qH", "<Cmd>QuerybookPrevColumn<CR>", { buffer = bufnr, silent = true, desc = "Querybook: previous result columns" })
+      vim.b[bufnr].querybook_viewport_maps = true
+    end
+    local function execute_one(item)
+      local old = find_current_result(bufnr, { start_line = item.anchor, end_line = item.anchor })
+      local previous_query = old and (old.last_successful_query or old.query)
+      local previous_truncated = old and old.truncated
+      local previous_truncation_reason = old and old.truncation_reason
+      if old and old.handle then old.handle.cancel(); old.handle = nil end
+      local result
+      if old then
+        -- One statement owns one result slot. Reusing the extmark prevents a
+        -- failed retry from stacking another ERROR block below the query.
+        result = old
+        result.generation = (result.generation or 0) + 1
+        result.query, result.status, result.error = item.query, "running", nil
+        result.previous_query = nil
+        result.connection_name, result.connection_profile, result.connection_driver = display_name, display_name, conn.driver
+        result.database, result.duration_ms = conn.database or conn.path, 0
+        result.auto_limit_applied, result.auto_limit_reason, result.truncated, result.truncation_reason = nil, nil, false, nil
+      else
+        bs.next_id = bs.next_id + 1
+        result = {
+          id = bs.next_id, query = item.query, status = "running", rows = {}, columns = {}, generation = 1,
+          connection_name = display_name, connection_profile = display_name, connection_driver = conn.driver,
+          database = conn.database or conn.path, duration_ms = 0, row_offset = 0, column_offset = 0,
+        }
+        result.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, item.anchor - 1, 0, { right_gravity = false, virt_lines = render.lines(result, M.config), virt_lines_above = false, virt_lines_leftcol = true })
+        bs.results[result.id] = result
+      end
       render_result(bufnr, result)
-    end)
-  end
-  for _, item in ipairs(queries) do execute_one(item) end
+      local started = vim.loop.hrtime()
+      local run_generation = result.generation
+      result.handle = runner.run(name, item.query, { force = (opts and opts.force) or M.config.allow_writes, generation = run_generation }, function(data, err)
+        if result.generation ~= run_generation or bs.results[result.id] ~= result then return end
+        result.duration_ms = math.floor((vim.loop.hrtime() - started) / 1000000)
+        result.handle = nil
+        if err then
+          result.status, result.error = "error", err
+          if M._inspect_state and M._inspect_state.result == result then M._inspect_state.generation = result.generation end
+          result.previous_query = (#(result.rows or {}) > 0 or #(result.columns or {}) > 0) and previous_query or nil
+          result.truncated, result.truncation_reason = previous_truncated or false, previous_truncation_reason
+        else
+          result.status, result.rows, result.columns = "success", data.rows or {}, data.columns or {}
+          local previous_handle = result.result_handle
+          result.result_handle = data.result_handle or data.handle
+          if previous_handle and previous_handle ~= result.result_handle and runner.result then
+            runner.result("release", { result_handle = previous_handle }, function() end)
+          end
+          -- The runner may attach the authoritative execution snapshot. Keep
+          -- that metadata with this result even if the manager selection changes.
+          local snapshot = data.connection or data.connection_metadata
+          if type(snapshot) == "table" then
+            result.connection_name = snapshot.name or result.connection_name
+            result.connection_profile = result.connection_name
+            result.connection_driver = snapshot.driver or result.connection_driver
+            result.database = snapshot.database or snapshot.path or result.database
+          end
+          result.previous_query = nil
+          result.last_successful_query = item.query
+          result.auto_limit_applied, result.auto_limit_reason = data.auto_limit_applied, data.auto_limit_reason
+          result.truncated, result.truncation_reason = data.truncated, data.truncation_reason
+          -- A successful execution gets a fresh immutable registry handle and
+          -- therefore cannot retain a prior filtered view or inspector state.
+          result.view_active, result.view_id, result.filter_expression, result.view_source_rows, result.view_count = false, nil, nil, nil, nil
+          result.row_offset, result.column_offset = 0, 0
+          if M._inspect_state and M._inspect_state.result == result then
+            M._inspect_state.closed = true
+            if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
+            M._inspect_state = nil
+          end
+        end
+        render_result(bufnr, result)
+      end)
+    end
+    for _, item in ipairs(queries) do execute_one(item) end
   end
   local active = connections.active()
   if active then execute_queries(active)
@@ -347,23 +251,23 @@ function M.run(opts)
 end
 
 function M.page(axis, direction)
-	local bufnr = vim.api.nvim_get_current_buf()
-	local cursor = vim.api.nvim_win_get_cursor(0)[1]
-	local current = parser.statement_at(parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)), cursor)
-	local result = current and find_current_result(bufnr, current)
-	if not result then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
-	local rows = result.rows or {}
-	local columns = result.columns or {}
-	if axis == "row" then
-		local page_size = M.config.preview_rows or M.config.max_rows or 10
-		local source_rows = result.view_active and result.view_source_rows
-		local row_count = source_rows and #source_rows or #rows
-		result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, row_count - 1)))
-	else
-		local page_size = M.config.max_columns or 12
-		result.column_offset = math.max(0, math.min((result.column_offset or 0) + direction * page_size, math.max(0, #columns - 1)))
-	end
-	render_result(bufnr, result)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor = vim.api.nvim_win_get_cursor(0)[1]
+  local current = parser.statement_at(parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)), cursor)
+  local result = current and find_current_result(bufnr, current)
+  if not result then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
+  local rows = result.rows or {}
+  local columns = result.columns or {}
+  if axis == "row" then
+    local page_size = M.config.preview_rows or M.config.max_rows or 10
+    local source_rows = result.view_active and result.view_source_rows
+    local row_count = source_rows and #source_rows or #rows
+    result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, row_count - 1)))
+  else
+    local page_size = M.config.max_columns or 12
+    result.column_offset = math.max(0, math.min((result.column_offset or 0) + direction * page_size, math.max(0, #columns - 1)))
+  end
+  render_result(bufnr, result)
 end
 
 function M.next_page() M.page("row", 1) end
@@ -453,27 +357,27 @@ function M.clear(all)
 end
 
 function M.setup(opts)
-	M.config = vim.tbl_deep_extend("force", defaults, opts or {})
-	-- max_rows was the old preview setting. Honor it when callers have not
-	-- opted into the clearer preview_rows name.
-	if opts and opts.preview_rows == nil and opts.max_rows ~= nil then M.config.preview_rows = opts.max_rows end
+  M.config = vim.tbl_deep_extend("force", defaults, opts or {})
+  -- max_rows was the old preview setting. Honor it when callers have not
+  -- opted into the clearer preview_rows name.
+  if opts and opts.preview_rows == nil and opts.max_rows ~= nil then M.config.preview_rows = opts.max_rows end
   connections.setup(M.config)
   render.setup_highlights()
   if not M._commands_created then
     vim.api.nvim_create_user_command("QuerybookRun", function(command_opts) M.run({ range = command_opts.range, line1 = command_opts.line1, line2 = command_opts.line2, force = command_opts.bang }) end, { range = true, bang = true, desc = "Run SQL under cursor or visual selection" })
     vim.api.nvim_create_user_command("QuerybookInspect", M.inspect, { desc = "Inspect Querybook result" })
-		vim.api.nvim_create_user_command("QuerybookFilter", M.filter, { desc = "Filter the open Querybook inspector" })
-		vim.api.nvim_create_user_command("QuerybookClearFilter", M.clear_filter, { desc = "Clear the Querybook inspector filter" })
-		vim.api.nvim_create_user_command("QuerybookPinRow", M.pin_row, { desc = "Pin or unpin the current inspector row" })
-		vim.api.nvim_create_user_command("QuerybookCompareRows", M.compare_rows, { desc = "Compare the current row with the pinned row" })
-		vim.api.nvim_create_user_command("QuerybookExportRetained", function() M.export("retained") end, { desc = "Export retained Querybook rows" })
-		vim.api.nvim_create_user_command("QuerybookExportFiltered", function() M.export("filtered") end, { desc = "Export filtered Querybook rows" })
-		vim.api.nvim_create_user_command("QuerybookExportFull", function() M.export("full") end, { desc = "Export the full Querybook result" })
-		vim.api.nvim_create_user_command("QuerybookToggle", M.toggle, { desc = "Collapse or expand Querybook result" })
-		vim.api.nvim_create_user_command("QuerybookNextPage", M.next_page, { desc = "Show next retained Querybook rows" })
-		vim.api.nvim_create_user_command("QuerybookPrevPage", M.prev_page, { desc = "Show previous retained Querybook rows" })
-		vim.api.nvim_create_user_command("QuerybookNextColumn", M.next_column, { desc = "Show next retained Querybook columns" })
-		vim.api.nvim_create_user_command("QuerybookPrevColumn", M.prev_column, { desc = "Show previous retained Querybook columns" })
+    vim.api.nvim_create_user_command("QuerybookFilter", M.filter, { desc = "Filter the open Querybook inspector" })
+    vim.api.nvim_create_user_command("QuerybookClearFilter", M.clear_filter, { desc = "Clear the Querybook inspector filter" })
+    vim.api.nvim_create_user_command("QuerybookPinRow", M.pin_row, { desc = "Pin or unpin the current inspector row" })
+    vim.api.nvim_create_user_command("QuerybookCompareRows", M.compare_rows, { desc = "Compare the current row with the pinned row" })
+    vim.api.nvim_create_user_command("QuerybookExportRetained", function() M.export("retained") end, { desc = "Export retained Querybook rows" })
+    vim.api.nvim_create_user_command("QuerybookExportFiltered", function() M.export("filtered") end, { desc = "Export filtered Querybook rows" })
+    vim.api.nvim_create_user_command("QuerybookExportFull", function() M.export("full") end, { desc = "Export the full Querybook result" })
+    vim.api.nvim_create_user_command("QuerybookToggle", M.toggle, { desc = "Collapse or expand Querybook result" })
+    vim.api.nvim_create_user_command("QuerybookNextPage", M.next_page, { desc = "Show next retained Querybook rows" })
+    vim.api.nvim_create_user_command("QuerybookPrevPage", M.prev_page, { desc = "Show previous retained Querybook rows" })
+    vim.api.nvim_create_user_command("QuerybookNextColumn", M.next_column, { desc = "Show next retained Querybook columns" })
+    vim.api.nvim_create_user_command("QuerybookPrevColumn", M.prev_column, { desc = "Show previous retained Querybook columns" })
     vim.api.nvim_create_user_command("QuerybookRefresh", M.refresh, { desc = "Re-run Querybook result" })
     vim.api.nvim_create_user_command("QuerybookClear", function(command_opts) M.clear(command_opts.bang) end, { bang = true, desc = "Clear Querybook result" })
     vim.api.nvim_create_user_command("QuerybookConnections", connections.open, { desc = "Manage Querybook connections" })
