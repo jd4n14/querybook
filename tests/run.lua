@@ -9,7 +9,9 @@ local function eq(a,b,msg) assert(vim.deep_equal(a,b),(msg or "values differ")..
 local statements=parser.parse({"select 1 as one;","","select ';' as semi;"}); assert(#statements==2); assert(parser.statement_at(statements,1).text=="select 1 as one;")
 local safe=risk.analyze("select * from t"); assert(not safe.dangerous); assert(risk.analyze("delete from t").dangerous)
 local rendered=render.lines({status="success",rows={{ {kind="text",text="abcdefghijklmnopqrstuvwxyz"} }},columns={{name="value"}},connection_name="profile",database="db",duration_ms=1},{max_rows=1,max_columns=1,max_value_length=5,max_column_width=10})
-assert(table.concat(vim.tbl_map(function(line)return line[1][1]end,rendered),"\n"):find("values clipped to 5",1,true))
+local rendered_text=table.concat(vim.tbl_map(function(line)return line[1][1]end,rendered),"\n")
+assert(rendered_text:find("abcd…",1,true), "long values still truncate with an ellipsis")
+assert(not rendered_text:find("values clipped",1,true), "clip notice must not appear in the result box")
 local viewport=render.lines({status="success",rows={{{kind="text",text="one"}},{{kind="text",text="two"}},{{kind="text",text="three"}}},columns={{name="value"}},connection_name="p",database="/very/long/path/querybook.sqlite3"},{preview_rows=2,max_columns=1})
 local viewport_text=table.concat(vim.tbl_map(function(line)return line[1][1]end,viewport),"\n")
 assert(viewport_text:find("rows 1%-2 of 3")); assert(viewport_text:find("querybook.sqlite3")); assert(not viewport_text:find("three",1,true))
@@ -18,6 +20,32 @@ assert(table.concat(vim.tbl_map(function(line)return line[1][1]end,shifted),"\n"
 local columns=render.lines({status="success",column_offset=2,rows={{{kind="text",text="a"},{kind="text",text="b"},{kind="text",text="c"}}},columns={{name="a"},{name="b"},{name="c"}},connection_name="p",database="db"},{preview_rows=1,max_columns=1})
 local columns_text=table.concat(vim.tbl_map(function(line)return line[1][1]end,columns),"\n")
 assert(columns_text:find("  │ c",1,true)); assert(not columns_text:find("  │ a",1,true))
+
+local function texts_of(lines) return vim.tbl_map(function(line) return line[1][1] end, lines) end
+local boxed=render.lines({status="success",rows={{{kind="text",text="1"},{kind="text",text="alpha"}}},columns={{name="id"},{name="name"}},connection_name="p",database="db",duration_ms=4},{preview_rows=10,max_columns=12})
+local boxed_lines=texts_of(boxed)
+local boxed_text=table.concat(boxed_lines,"\n")
+assert(boxed_lines[1]:find("┐",1,true), "status line must close the top-right corner")
+assert(boxed_text:find("┤",1,true), "header divider must close with ┤")
+assert(boxed_lines[#boxed_lines]:find("┘",1,true), "bottom line must close the bottom-right corner")
+local header, divider, row
+for _, line in ipairs(boxed_lines) do
+  if not header and line:find("id",1,true) and line:find("name",1,true) then header=line
+  elseif line:find("┼",1,true) then divider=line
+  elseif line:find("alpha",1,true) then row=line
+  end
+end
+assert(header and header:sub(-#"│") == "│", "header must have a right vertical border")
+assert(row and row:sub(-#"│") == "│", "data row must have a right vertical border")
+assert(divider and divider:sub(-#"┤") == "┤", "divider must end with ┤")
+local box_width=vim.fn.strdisplaywidth(header)
+assert(vim.fn.strdisplaywidth(boxed_lines[1])==box_width, "status width must match the table")
+assert(vim.fn.strdisplaywidth(divider)==box_width, "divider width must match the header")
+assert(vim.fn.strdisplaywidth(row)==box_width, "row width must match the header")
+assert(vim.fn.strdisplaywidth(boxed_lines[#boxed_lines])==box_width, "bottom width must match the table")
+for _, line in ipairs(boxed_lines) do
+  assert(vim.fn.strdisplaywidth(line)==box_width, "every box line must share a right edge")
+end
 
 local db=vim.fn.tempname()..".sqlite3"
 local querybook=require("querybook"); querybook.setup({runner_path=root.."/bin/querybook-runner",connection_store_path=vim.fn.tempname()..".connections.sqlite",connections={sqlite={driver="sqlite",path=db}},active_connection="sqlite",timeout_ms=5000})

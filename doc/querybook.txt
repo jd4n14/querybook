@@ -128,11 +128,12 @@ The inline display reads these limits, while retaining the complete result:
     batch_rows              JSONL batch row bound (default 200)
     batch_bytes             JSONL batch byte bound (default 512 KiB)
 
-Every hidden or clipped dimension is labelled and QuerybookInspect remains
-available for the full result. Top-level SELECT statements without an outer
-LIMIT receive a Go-runner `LIMIT 500`; explicit outer limits and nested or
-commented LIMIT text are preserved. The inline header reports this automatic
-limit separately from the visible row page and retention status.
+Hidden row and column pages are labelled with the current range, and
+QuerybookInspect remains available for the full result. Top-level SELECT
+statements without an outer LIMIT receive a Go-runner `LIMIT 500`; explicit
+outer limits and nested or commented LIMIT text are preserved. The inline
+header reports this automatic limit separately from the visible row page and
+retention status.
 
 TRANSPORT                                                     *querybook-transport*
 

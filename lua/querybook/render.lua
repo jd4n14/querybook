@@ -34,6 +34,23 @@ end
 
 local function chunks(text, hl) return { { text, hl } } end
 
+local function box_line(text, fill, right, hl)
+  return { text = text, fill = fill, right = right, hl = hl }
+end
+
+local function close_box(parts)
+  local width = 0
+  for _, part in ipairs(parts) do
+    width = math.max(width, vim.fn.strdisplaywidth(part.text) + 2)
+  end
+  local lines = {}
+  for _, part in ipairs(parts) do
+    local pad = math.max(0, width - vim.fn.strdisplaywidth(part.text) - 1)
+    lines[#lines + 1] = chunks(part.text .. string.rep(part.fill, pad) .. part.right, part.hl)
+  end
+  return lines
+end
+
 local function compact_database(result)
   local value = tostring(result.database or "")
   if value == "" then return "(none)" end
@@ -90,12 +107,12 @@ function M.lines(result, config)
   if result.auto_limit_applied then status = status .. " · auto LIMIT 500" end
   if result.truncated then status = status .. " · retained truncated (" .. tostring(result.truncation_reason or "limit") .. ")" end
 
-  local lines = { chunks("  ┌ " .. status, result.status == "error" and "QuerybookError" or "QuerybookMeta") }
+  local parts = { box_line("  ┌ " .. status .. " ", "─", "┐", result.status == "error" and "QuerybookError" or "QuerybookMeta") }
   if result.status == "error" and result.previous_query then
-    lines[#lines + 1] = chunks("  │ previous successful data retained; Inspect shows full values", "QuerybookMeta")
+    parts[#parts + 1] = box_line("  │ previous successful data retained; Inspect shows full values", " ", "│", "QuerybookMeta")
   end
   if result.collapsed then
-    lines[#lines + 1] = chunks("  │ [collapsed] QuerybookToggle to expand · QuerybookInspect for full result", "QuerybookMeta")
+    parts[#parts + 1] = box_line("  │ [collapsed] QuerybookToggle to expand · QuerybookInspect for full result", " ", "│", "QuerybookMeta")
   elseif #visible > 0 then
     local preview_rows = math.max(1, preview_rows)
     local widths = {}
@@ -110,44 +127,41 @@ function M.lines(result, config)
     local header, divider = "  │ ", "  ├─"
     for i, column in ipairs(visible) do
       header = header .. clip(name(column), widths[i]) .. (i == #visible and "" or " │ ")
-      divider = divider .. string.rep("─", widths[i]) .. (i == #visible and "─" or "─┼─")
+      divider = divider .. string.rep("─", widths[i]) .. (i == #visible and "" or "─┼─")
     end
-    lines[#lines + 1] = chunks(header, "QuerybookHeader")
-    lines[#lines + 1] = chunks(divider, "QuerybookDivider")
+    parts[#parts + 1] = box_line(header, " ", "│", "QuerybookHeader")
+    parts[#parts + 1] = box_line(divider, "─", "┤", "QuerybookDivider")
     local first = row_offset + 1
     local last = math.min(total_rows, row_offset + preview_rows)
-    local clipped = false
     for row_index = first, last do
       local source = source_rows and source_rows[row_index]
       local row, row_text = source_rows and rows[source + 1] or rows[row_index], "  │ "
       for i, column in ipairs(visible) do
         local raw = M.value_text(row, column)
         if #raw > max_value_length then
-          clipped = true
           raw = raw:sub(1, math.max(1, max_value_length - 1)) .. "…"
         end
         row_text = row_text .. clip(raw, widths[i]) .. (i == #visible and "" or " │ ")
       end
-      lines[#lines + 1] = chunks(row_text, "QuerybookRow")
+      parts[#parts + 1] = box_line(row_text, " ", "│", "QuerybookRow")
     end
-    if total_rows == 0 then lines[#lines + 1] = chunks("  │ (no matching rows)", "QuerybookMeta") end
-    if clipped then lines[#lines + 1] = chunks("  │ values clipped to " .. max_value_length .. " characters · Inspect for exact values", "QuerybookMeta") end
+    if total_rows == 0 then parts[#parts + 1] = box_line("  │ (no matching rows)", " ", "│", "QuerybookMeta") end
     if total_rows > 0 then
       local range = range_label(first, last, total_rows)
       if source_rows then
         local first_source, last_source = source_rows[first], source_rows[last]
         range = range:gsub("^rows", "matching rows") .. string.format(" · source %d-%d of %d", first_source + 1, last_source + 1, #rows)
       end
-      lines[#lines + 1] = chunks("  │ " .. range .. " · QuerybookNextPage/PrevPage", "QuerybookMeta")
+      parts[#parts + 1] = box_line("  │ " .. range .. " · QuerybookNextPage/PrevPage", " ", "│", "QuerybookMeta")
     end
     if #columns > #visible then
-      lines[#lines + 1] = chunks("  │ columns " .. (column_offset + 1) .. "-" .. (column_offset + #visible) .. " of " .. #columns .. " · QuerybookNextColumn/PrevColumn", "QuerybookMeta")
+      parts[#parts + 1] = box_line("  │ columns " .. (column_offset + 1) .. "-" .. (column_offset + #visible) .. " of " .. #columns .. " · QuerybookNextColumn/PrevColumn", " ", "│", "QuerybookMeta")
     end
   elseif result.status ~= "error" then
-    lines[#lines + 1] = chunks("  │ (no columns returned)", "QuerybookMeta")
+    parts[#parts + 1] = box_line("  │ (no columns returned)", " ", "│", "QuerybookMeta")
   end
-  lines[#lines + 1] = chunks("  └──────────────────────────────────────────────", "QuerybookDivider")
-  return lines
+  parts[#parts + 1] = box_line("  └", "─", "┘", "QuerybookDivider")
+  return close_box(parts)
 end
 
 function M.setup_highlights()

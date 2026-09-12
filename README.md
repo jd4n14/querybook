@@ -104,8 +104,8 @@ Inline output is a compact viewport showing 10 rows by default. Use
 mappings to page retained rows, and `:QuerybookNextColumn`/`:QuerybookPrevColumn`
 or `<leader>qL`/`<leader>qH` to page columns. Configure `preview_rows` and
 `max_columns` to change the page size; legacy `max_rows` is honored as a
-preview override when `preview_rows` is not set. Every hidden or clipped
-dimension is labelled explicitly. The runner retains at most `max_retained_rows` rows or
+preview override when `preview_rows` is not set. Hidden row and column pages
+are labelled with the current range. The runner retains at most `max_retained_rows` rows or
 `max_retained_bytes` bytes (defaults 10000 and 16 MiB), and labels truncation.
 `QuerybookInspect` opens a vertical, navigable view with connection profile
 and database captured at execution time. It keeps an opaque result handle and
