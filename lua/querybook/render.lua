@@ -25,11 +25,35 @@ function M.value_text(row, column)
   return is_null and "NULL" or tostring(value)
 end
 
+local function display_len(text)
+  return vim.fn.strdisplaywidth(tostring(text or ""))
+end
+
+local function truncate_display(text, width)
+  text = tostring(text or "")
+  if width <= 0 then return "" end
+  if display_len(text) <= width then return text end
+  if width == 1 then return "…" end
+  local lo, hi, best = 0, vim.fn.strchars(text), 0
+  while lo <= hi do
+    local mid = math.floor((lo + hi) / 2)
+    local candidate = vim.fn.strcharpart(text, 0, mid)
+    if display_len(candidate) <= width - 1 then
+      best = mid
+      lo = mid + 1
+    else
+      hi = mid - 1
+    end
+  end
+  return vim.fn.strcharpart(text, 0, best) .. "…"
+end
+
 local function clip(value, width)
   value = tostring(value):gsub("\n", "\\n"):gsub("\r", "\\r")
-  if width < 2 then return value:sub(1, width) end
-  if #value > width then return value:sub(1, width - 1) .. "…" end
-  return value .. string.rep(" ", width - #value)
+  if width <= 0 then return "" end
+  if #value > width * 4 + 8 then value = value:sub(1, width * 4 + 8) end
+  local truncated = truncate_display(value, width)
+  return truncated .. string.rep(" ", math.max(0, width - display_len(truncated)))
 end
 
 local function chunks(text, hl) return { { text, hl } } end
@@ -38,17 +62,58 @@ local function box_line(text, fill, right, hl)
   return { text = text, fill = fill, right = right, hl = hl }
 end
 
-local function close_box(parts)
+local function close_box(parts, target)
   local width = 0
   for _, part in ipairs(parts) do
-    width = math.max(width, vim.fn.strdisplaywidth(part.text) + 2)
+    width = math.max(width, display_len(part.text) + 2)
   end
+  if type(target) == "number" and target > 0 then width = math.max(1, math.floor(target)) end
   local lines = {}
   for _, part in ipairs(parts) do
-    local pad = math.max(0, width - vim.fn.strdisplaywidth(part.text) - 1)
-    lines[#lines + 1] = chunks(part.text .. string.rep(part.fill, pad) .. part.right, part.hl)
+    local text = part.text
+    local max_text = math.max(0, width - 2)
+    if display_len(text) > max_text then text = truncate_display(text, max_text) end
+    local pad = math.max(0, width - display_len(text) - 1)
+    lines[#lines + 1] = chunks(text .. string.rep(part.fill, pad) .. part.right, part.hl)
   end
   return lines
+end
+
+local function allocate_widths(preferred, budget)
+  local n = #preferred
+  if n == 0 then return {} end
+  budget = math.max(n, budget or n)
+  local widths, sum = {}, 0
+  for i, p in ipairs(preferred) do
+    widths[i] = math.max(1, math.floor(p))
+    sum = sum + widths[i]
+  end
+  if sum < budget then
+    widths[n] = widths[n] + (budget - sum)
+    return widths
+  end
+  local overflow = sum - budget
+  for i = n, 1, -1 do
+    if overflow <= 0 then break end
+    local take = math.min(math.max(0, widths[i] - 1), overflow)
+    widths[i] = widths[i] - take
+    overflow = overflow - take
+  end
+  return widths
+end
+
+local function column_budget(target, n)
+  if n <= 0 then return 0 end
+  return math.max(n, target - 6 - 3 * (n - 1))
+end
+
+local function resolve_display_width(config)
+  if type(config.display_width) == "number" and config.display_width > 0 then
+    return math.floor(config.display_width)
+  end
+  local ok, width = pcall(vim.api.nvim_win_get_width, 0)
+  if ok and type(width) == "number" and width > 0 then return width end
+  return tonumber(vim.o.columns) or 80
 end
 
 local function compact_database(result)
@@ -72,8 +137,7 @@ function M.lines(result, config)
   -- preview_rows is the new name. max_rows remains a compatibility override.
   local preview_rows = config.preview_rows or config.max_rows or 10
   local max_columns = config.max_columns or 12
-  local max_value_length = config.max_value_length or 128
-  local max_width = config.max_column_width or 32
+  local target = resolve_display_width(config)
   local rows = result.rows or {}
   local columns = result.columns or {}
   local source_rows = result.view_active and result.view_source_rows
@@ -115,15 +179,20 @@ function M.lines(result, config)
     parts[#parts + 1] = box_line("  │ [collapsed] QuerybookToggle to expand · QuerybookInspect for full result", " ", "│", "QuerybookMeta")
   elseif #visible > 0 then
     local preview_rows = math.max(1, preview_rows)
-    local widths = {}
+    local budget = column_budget(target, #visible)
+    local preferred = {}
     for i, column in ipairs(visible) do
-      widths[i] = math.min(max_width, math.max(#name(column), 3))
+      local width = math.max(display_len(name(column)), 3)
       for row_index = row_offset + 1, math.min(total_rows, row_offset + preview_rows) do
         local source = source_rows and source_rows[row_index]
         local row = source_rows and rows[source + 1] or rows[row_index]
-        widths[i] = math.min(max_width, math.max(widths[i], #M.value_text(row, column)))
+        local raw = M.value_text(row, column)
+        if #raw > budget * 4 + 8 then raw = raw:sub(1, budget * 4 + 8) end
+        width = math.max(width, math.min(budget, display_len(raw)))
       end
+      preferred[i] = width
     end
+    local widths = allocate_widths(preferred, budget)
     local header, divider = "  │ ", "  ├─"
     for i, column in ipairs(visible) do
       header = header .. clip(name(column), widths[i]) .. (i == #visible and "" or " │ ")
@@ -137,11 +206,7 @@ function M.lines(result, config)
       local source = source_rows and source_rows[row_index]
       local row, row_text = source_rows and rows[source + 1] or rows[row_index], "  │ "
       for i, column in ipairs(visible) do
-        local raw = M.value_text(row, column)
-        if #raw > max_value_length then
-          raw = raw:sub(1, math.max(1, max_value_length - 1)) .. "…"
-        end
-        row_text = row_text .. clip(raw, widths[i]) .. (i == #visible and "" or " │ ")
+        row_text = row_text .. clip(M.value_text(row, column), widths[i]) .. (i == #visible and "" or " │ ")
       end
       parts[#parts + 1] = box_line(row_text, " ", "│", "QuerybookRow")
     end
@@ -161,7 +226,7 @@ function M.lines(result, config)
     parts[#parts + 1] = box_line("  │ (no columns returned)", " ", "│", "QuerybookMeta")
   end
   parts[#parts + 1] = box_line("  └", "─", "┘", "QuerybookDivider")
-  return close_box(parts)
+  return close_box(parts, target)
 end
 
 function M.setup_highlights()

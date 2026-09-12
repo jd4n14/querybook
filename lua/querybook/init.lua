@@ -44,13 +44,29 @@ local function result_position(bufnr, result)
   return pos[1] and pos[1] + 1 or nil
 end
 
+local function window_for_buf(bufnr)
+  local current = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_buf(current) == bufnr then return current end
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == bufnr then return win end
+  end
+  return current
+end
+
+local function render_config(bufnr)
+  local cfg = vim.tbl_extend("force", {}, M.config or {})
+  local ok, width = pcall(vim.api.nvim_win_get_width, window_for_buf(bufnr))
+  if ok and type(width) == "number" and width > 0 then cfg.display_width = width end
+  return cfg
+end
+
 local function render_result(bufnr, result)
   local line = result_position(bufnr, result)
   if not line then return end
   vim.api.nvim_buf_set_extmark(bufnr, ns, line - 1, 0, {
     id = result.extmark,
     right_gravity = false,
-    virt_lines = render.lines(result, M.config),
+    virt_lines = render.lines(result, render_config(bufnr)),
     virt_lines_above = false,
     virt_lines_leftcol = true,
   })
@@ -190,7 +206,7 @@ function M.run(opts)
           connection_name = display_name, connection_profile = display_name, connection_driver = conn.driver,
           database = conn.database or conn.path, duration_ms = 0, row_offset = 0, column_offset = 0,
         }
-        result.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, item.anchor - 1, 0, { right_gravity = false, virt_lines = render.lines(result, M.config), virt_lines_above = false, virt_lines_leftcol = true })
+        result.extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, item.anchor - 1, 0, { right_gravity = false, virt_lines = render.lines(result, render_config(bufnr)), virt_lines_above = false, virt_lines_leftcol = true })
         bs.results[result.id] = result
       end
       render_result(bufnr, result)
@@ -389,6 +405,13 @@ function M.setup(opts)
   end
   local group = vim.api.nvim_create_augroup("Querybook", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufEnter" }, { group = group, callback = function(args) if state[args.buf] then refresh_stale(args.buf) end end })
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, { group = group, callback = function()
+    for bufnr, bs in pairs(state) do
+      if vim.api.nvim_buf_is_valid(bufnr) then
+        for _, result in pairs(bs.results) do render_result(bufnr, result) end
+      end
+    end
+  end })
   vim.api.nvim_create_autocmd("BufDelete", { group = group, callback = function(args)
     local bs = state[args.buf]
     if bs then for _, result in pairs(bs.results) do if result.handle then result.handle.cancel() end end; state[args.buf] = nil end

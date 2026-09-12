@@ -117,8 +117,9 @@ The inline display reads these limits, while retaining the complete result:
     preview_rows           Rows per inline viewport page (default 10)
     max_rows               Legacy alias for preview_rows when preview_rows is absent
     max_columns            Columns per inline viewport page (default 12)
-    max_value_length       Maximum displayed value characters (default 128)
-    max_column_width       Maximum table cell width (default 32)
+    max_value_length       Legacy cell-length hint; cells clip to the window
+    max_column_width       Legacy cell-width hint; the last column flexes to fill
+                           the current window
 
     runner_path             Optional installed querybook-runner executable
     connection_store_path   Optional managed metadata SQLite path
@@ -128,7 +129,8 @@ The inline display reads these limits, while retaining the complete result:
     batch_rows              JSONL batch row bound (default 200)
     batch_bytes             JSONL batch byte bound (default 512 KiB)
 
-Hidden row and column pages are labelled with the current range, and
+The inline result table fills the current window width and clips cells to
+fit. Hidden row and column pages are labelled with the current range, and
 QuerybookInspect remains available for the full result. Top-level SELECT
 statements without an outer LIMIT receive a Go-runner `LIMIT 500`; explicit
 outer limits and nested or commented LIMIT text are preserved. The inline
