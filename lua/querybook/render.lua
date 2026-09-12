@@ -172,6 +172,9 @@ function M.lines(result, config)
   if result.truncated then status = status .. " · retained truncated (" .. tostring(result.truncation_reason or "limit") .. ")" end
 
   local parts = { box_line("  ┌ " .. status .. " ", "─", "┐", result.status == "error" and "QuerybookError" or "QuerybookMeta") }
+  if result.filter_expression and result.filter_expression ~= "" then
+    parts[#parts + 1] = box_line("  │ local filter: " .. tostring(result.filter_expression), " ", "│", "QuerybookMeta")
+  end
   if result.status == "error" and result.previous_query then
     parts[#parts + 1] = box_line("  │ previous successful data retained; Inspect shows full values", " ", "│", "QuerybookMeta")
   end

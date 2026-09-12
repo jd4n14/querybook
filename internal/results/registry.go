@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 	"sync"
 	"time"
 
@@ -287,7 +286,7 @@ func (r *Registry) ViewIndices(handle, viewID string) ([]int, error) {
 // It returns a new view ID only after parsing and evaluating every row has
 // succeeded, so the previous view is never corrupted by a bad expression.
 func (r *Registry) Filter(handle, expression string) (string, int, error) {
-	predicate, err := compilePredicate(expression)
+	compiled, err := compileFilter(expression)
 	if err != nil {
 		return "", 0, err
 	}
@@ -297,13 +296,13 @@ func (r *Registry) Filter(handle, expression string) (string, int, error) {
 		r.mu.RUnlock()
 		return "", 0, err
 	}
-	if err := predicate.validate(e.meta); err != nil {
+	if err := compiled.validate(e.meta); err != nil {
 		r.mu.RUnlock()
 		return "", 0, err
 	}
 	selected := make([]int, 0, len(e.rows))
 	for i, row := range e.rows {
-		if predicate.matches(e.meta, row) {
+		if compiled.match(e.meta, row) {
 			selected = append(selected, i)
 		}
 	}
@@ -323,96 +322,8 @@ func (r *Registry) Filter(handle, expression string) (string, int, error) {
 	return viewID, len(selected), nil
 }
 
-// jsonValue preserves SQL null, strings, booleans, binaries, and exact SQL
-// numeric text as distinct values. JSON parsing is only used when a text cell
-// is explicitly JSON-shaped by a JSONPath object traversal.
-func jsonValue(meta Metadata, index int, c protocol.Cell) any {
-	if c.Kind == "null" {
-		return nil
-	}
-	if c.Kind == "binary" {
-		return map[string]any{"$binary": c.Base64}
-	}
-	if c.Kind != "text" {
-		return c.Text
-	}
-	// ValueKind comes from the driver's runtime value. It takes precedence over
-	// ColumnTypes, whose DatabaseTypeName is commonly empty for SQLite
-	// expressions/CTEs and can describe a declared column rather than the value
-	// returned by an expression. In particular, MySQL TINYINT values arrive as
-	// int64 and must remain numeric; only an actual bool runtime value is bool.
-	if c.ValueKind == "integer" || c.ValueKind == "unsigned" || c.ValueKind == "float" {
-		if _, ok := new(big.Rat).SetString(c.Text); ok {
-			return exactNumber{raw: c.Text}
-		}
-	}
-	if c.ValueKind == "boolean" {
-		switch c.Text {
-		case "0", "false", "FALSE":
-			return false
-		case "1", "true", "TRUE":
-			return true
-		}
-	}
-	// Cells produced before ValueKind was added retain the metadata-based
-	// fallback for compatibility with tests and callers constructing cells.
-	legacyRuntimeKind := c.ValueKind == ""
-	if legacyRuntimeKind && index < len(meta.Columns) && isJSONNumericType(meta.Columns[index].DatabaseType) {
-		if _, ok := new(big.Rat).SetString(c.Text); ok {
-			return exactNumber{raw: c.Text}
-		}
-	}
-	if index < len(meta.Columns) && isJSONDocumentType(meta.Columns[index].DatabaseType) {
-		var decoded any
-		dec := json.NewDecoder(strings.NewReader(c.Text))
-		dec.UseNumber()
-		if dec.Decode(&decoded) == nil {
-			return decoded
-		}
-	}
-	if legacyRuntimeKind && index < len(meta.Columns) && isJSONBoolType(meta.Columns[index].DatabaseType) {
-		switch c.Text {
-		case "0", "false", "FALSE":
-			return false
-		case "1", "true", "TRUE":
-			return true
-		}
-	}
-	return c.Text
-}
-
-type exactNumber struct{ raw string }
-
-func (n exactNumber) rat() (*big.Rat, error) {
-	r := new(big.Rat)
-	if _, ok := r.SetString(n.raw); !ok {
-		return nil, errors.New("invalid numeric cell")
-	}
-	return r, nil
-}
-
-func isJSONNumericType(typ string) bool {
-	t := strings.ToLower(typ)
-	for _, part := range []string{"int", "decimal", "numeric", "number", "float", "double", "real", "bit"} {
-		if strings.Contains(t, part) {
-			return true
-		}
-	}
-	return false
-}
-
-func isJSONBoolType(typ string) bool {
-	t := strings.ToLower(typ)
-	return strings.Contains(t, "bool")
-}
-
-func isJSONDocumentType(typ string) bool {
-	t := strings.ToLower(typ)
-	return strings.Contains(t, "json") || strings.Contains(t, "struct")
-}
-
-// JSONNumber is exposed for tests and future filters that need to inspect a
-// raw exact literal without converting through float64.
+// JSONNumber is exposed for tests and adapters that need to inspect a raw
+// numeric literal without converting through float64.
 func JSONNumber(raw string) (json.Number, error) {
 	if _, ok := new(big.Rat).SetString(raw); !ok {
 		return "", errors.New("invalid JSON number")

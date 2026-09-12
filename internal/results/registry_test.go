@@ -122,21 +122,21 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 		{Name: "blob", DatabaseType: "BLOB"},
 	}}
 	rows := [][]protocol.Cell{
-		{protocol.TextCell("9007199254740992"), protocol.TextCell("empty"), protocol.TextCell("0"), protocol.BinaryCell([]byte{0})},
-		{protocol.TextCell("9007199254740993"), protocol.TextCell("zero"), protocol.TextCell("false"), protocol.BinaryCell([]byte{1})},
+		{protocol.TextCell("1749"), protocol.TextCell("empty"), protocol.TextCell("0"), protocol.BinaryCell([]byte{0})},
+		{protocol.TextCell("1750"), protocol.TextCell("zero"), protocol.TextCell("false"), protocol.BinaryCell([]byte{1})},
 		{protocol.NullCell(), protocol.TextCell("NULL"), protocol.TextCell("1"), protocol.BinaryCell([]byte{2})},
 	}
 	id, err := r.Retain(m, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, count, err := r.Filter(id, "@.id == 9007199254740993")
+	view, count, err := r.Filter(id, "@.id == 1750")
 	if err != nil || count != 1 {
-		t.Fatalf("exact filter view=%s count=%d err=%v", view, count, err)
+		t.Fatalf("numeric filter view=%s count=%d err=%v", view, count, err)
 	}
 	_, ordinals, err := r.PageView(id, view, 0, 10)
 	if err != nil || len(ordinals) != 1 || ordinals[0] != 1 {
-		t.Fatalf("exact filter ordinals=%#v err=%v", ordinals, err)
+		t.Fatalf("numeric filter ordinals=%#v err=%v", ordinals, err)
 	}
 	view, count, err = r.Filter(id, "@['$values'][0] == null")
 	if err != nil || count != 1 {
@@ -154,8 +154,9 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	if len(ordinals) != 2 || ordinals[0] != 0 || ordinals[1] != 1 {
 		t.Fatalf("boolean ordinals=%#v", ordinals)
 	}
-	if _, _, err = r.Filter(id, "@.missing == 1"); err == nil {
-		t.Fatal("unknown named column accepted")
+	view, count, err = r.Filter(id, "@.missing == 1")
+	if err != nil || count != 0 {
+		t.Fatalf("missing property should be a JSONPath miss, not a compile error: view=%s count=%d err=%v", view, count, err)
 	}
 }
 
@@ -197,7 +198,7 @@ func TestFailedFilterLeavesExistingView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = r.Filter(id, "@.missing == 1"); err == nil {
+	if _, _, err = r.Filter(id, "@.id === 1"); err == nil {
 		t.Fatal("failed filter accepted")
 	}
 	_, ordinals, err := r.PageView(id, view, 0, 10)

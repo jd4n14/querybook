@@ -21,12 +21,14 @@ COMMANDS                                                        *querybook-comma
     driver, database, matching/source row positions, and full field values.
 
 :QuerybookFilter                                               *:QuerybookFilter*
-    Prompt for a JSONPath or shorthand expression and apply it to every retained
-    row. Invalid expressions leave the prior view unchanged. An empty expression
-    clears the filter.
+    Prompt for a JSONPath or shorthand expression and apply it locally to every
+    retained row. Shorthand starting with @ is wrapped as $[?(...)]. The SQL is
+    not modified. Invalid expressions leave the prior view unchanged. An empty
+    expression clears the filter.
 
 :QuerybookClearFilter                                     *:QuerybookClearFilter*
-    Clear the inspector filter and return to all retained rows.
+    Clear the local JSONPath filter and return to all retained rows without
+    re-executing SQL.
 
 :QuerybookPinRow                                             *:QuerybookPinRow*
     Pin the current source row, or unpin it when it is already pinned.
@@ -100,6 +102,40 @@ structured type. Copy operations use retained typed cells, so tabs, newlines,
 Unicode, decimals, and large integers are not rounded or clipped. A stale
 result continues to show its captured SQL and connection snapshot; a new
 successful execution creates a fresh handle and clears inspector state.
+
+JSONPATH FILTER                                              *querybook-jsonpath*
+
+SQL queries the database. JSONPath queries the retained ResultSet. The runner
+adds an automatic outer LIMIT 500 for interactive SELECTs; the filter then
+runs over those retained rows, not just the visible page.
+
+    :QuerybookFilter
+    @.client_id == 1749 &&
+    @.data.weight > 0.4 &&
+    @.invoice_id == null
+
+Shorthand starting with @ is wrapped as $[?(...)]. Full JSONPath such as
+$[?(@.client_id == 1749)] is accepted as-is. Evaluation uses the Go
+github.com/theory/jsonpath implementation of RFC 9535.
+
+The ResultSet keeps original columns, order, types, NULL, DECIMAL text,
+timestamps, blobs, and driver metadata. JSONPath sees a temporary per-row
+object. Nested JSON is parsed only when the path traverses that column.
+Invalid JSON in a traversed cell is a miss, not a panic. SQL NULL is JSON
+null. An empty string, 0, and false do not match null.
+
+Missing properties compare as JSONPath Nothing (the comparison is false),
+not as SQL UNKNOWN. Existence $[?(@.invoice_id)] is true when the column is
+present, including SQL NULL, because the adapter always emits the key.
+
+Numeric comparisons follow IEEE 754. Integers beyond 2^53 may collide.
+Duplicate column labels are ambiguous by name; positional access uses
+@['$values'][i]. Pagination and Inspect [r / ]r walk matching rows. Clearing
+the filter restores the retained rows without running SQL again. A successful
+re-run drops the filter with the new result handle.
+
+Export filtered uses matching retained rows. Export full re-executes the
+original SQL and does not translate JSONPath into WHERE.
 
 CONFIGURATION                                                  *querybook-config*
 

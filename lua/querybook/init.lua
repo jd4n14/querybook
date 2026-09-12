@@ -311,18 +311,63 @@ local function inspect_state()
   return nil
 end
 
+local function current_notebook_result()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor = vim.api.nvim_win_get_cursor(0)[1]
+  local current = parser.statement_at(parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)), cursor)
+  return bufnr, current and find_current_result(bufnr, current)
+end
+
+local function apply_notebook_filter(bufnr, result, expression)
+  expression = vim.trim(expression or "")
+  if expression == "" then
+    result.view_active, result.view_id, result.filter_expression, result.view_source_rows, result.view_count = false, nil, nil, nil, nil
+    result.row_offset = 0
+    render_result(bufnr, result)
+    return
+  end
+  if not result.result_handle or not runner.result then
+    return vim.notify("Querybook: no retained result near cursor", vim.log.levels.WARN)
+  end
+  runner.result("filter", { result_handle = result.result_handle, expression = expression, filter = expression }, function(data, err)
+    if err or not data or data.valid == false then
+      return vim.notify(err or data and data.error or "Querybook: invalid filter", vim.log.levels.WARN)
+    end
+    local indices = data.matching_indices or data.source_rows or data.source_indices
+    if type(indices) ~= "table" then
+      return vim.notify("Querybook: filter response did not include matching source rows", vim.log.levels.WARN)
+    end
+    result.view_active, result.view_id, result.filter_expression = true, data.view_id, expression
+    result.view_source_rows, result.view_count, result.row_offset = vim.deepcopy(indices), tonumber(data.total_rows or data.matching_count) or #indices, 0
+    render_result(bufnr, result)
+  end)
+end
+
 function M.filter()
   local view = inspect_state()
-  if not view then return vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+  if view then
+    vim.ui.input({ prompt = "Querybook filter (JSONPath or shorthand; empty clears): " }, function(value)
+      if value == nil then return end
+      inspect_view.filter(view, value)
+    end)
+    return
+  end
+  local bufnr, result = current_notebook_result()
+  if not result or not result.result_handle then
+    return vim.notify("Querybook: no retained result near cursor", vim.log.levels.WARN)
+  end
   vim.ui.input({ prompt = "Querybook filter (JSONPath or shorthand; empty clears): " }, function(value)
     if value == nil then return end
-    inspect_view.filter(view, value)
+    apply_notebook_filter(bufnr, result, value)
   end)
 end
 
 function M.clear_filter()
   local view = inspect_state()
-  if view then inspect_view.clear_filter(view) else vim.notify("Querybook: open an inspector first", vim.log.levels.WARN) end
+  if view then inspect_view.clear_filter(view); return end
+  local bufnr, result = current_notebook_result()
+  if not result then return vim.notify("Querybook: no retained result near cursor", vim.log.levels.WARN) end
+  apply_notebook_filter(bufnr, result, "")
 end
 
 function M.pin_row()
@@ -382,8 +427,8 @@ function M.setup(opts)
   if not M._commands_created then
     vim.api.nvim_create_user_command("QuerybookRun", function(command_opts) M.run({ range = command_opts.range, line1 = command_opts.line1, line2 = command_opts.line2, force = command_opts.bang }) end, { range = true, bang = true, desc = "Run SQL under cursor or visual selection" })
     vim.api.nvim_create_user_command("QuerybookInspect", M.inspect, { desc = "Inspect Querybook result" })
-    vim.api.nvim_create_user_command("QuerybookFilter", M.filter, { desc = "Filter the open Querybook inspector" })
-    vim.api.nvim_create_user_command("QuerybookClearFilter", M.clear_filter, { desc = "Clear the Querybook inspector filter" })
+    vim.api.nvim_create_user_command("QuerybookFilter", M.filter, { desc = "Filter retained Querybook rows with local JSONPath" })
+    vim.api.nvim_create_user_command("QuerybookClearFilter", M.clear_filter, { desc = "Clear the local Querybook JSONPath filter" })
     vim.api.nvim_create_user_command("QuerybookPinRow", M.pin_row, { desc = "Pin or unpin the current inspector row" })
     vim.api.nvim_create_user_command("QuerybookCompareRows", M.compare_rows, { desc = "Compare the current row with the pinned row" })
     vim.api.nvim_create_user_command("QuerybookExportRetained", function() M.export("retained") end, { desc = "Export retained Querybook rows" })

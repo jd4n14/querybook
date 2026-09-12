@@ -67,7 +67,7 @@ local function format_meta(result, state)
   local page_count = math.max(1, math.ceil(matching / state.page_size))
   local source = state.current_source and ((state.current_source + 1) .. "/" .. retained) or "-"
   lines[#lines + 1] = string.format("matching %d/%d · source %s · page %d/%d", state.current_match or 0, matching, source, state.page, page_count)
-  if state.filter then lines[#lines + 1] = "filter: " .. state.filter end
+  if state.filter then lines[#lines + 1] = "local filter: " .. state.filter end
   return lines
 end
 
@@ -236,7 +236,7 @@ function M.filter(state, expression)
   if expression == "" then return M.clear_filter(state) end
   invoke(state.runner, "filter", { result_handle = state.handle, expression = expression, filter = expression }, function(data, err)
     if state.closed or state.generation ~= state.result.generation then return end
-    if err or not data or data.valid == false then notify(err or data.error or "invalid filter", vim.log.levels.WARN); return end
+    if err or not data or data.valid == false then notify(err or (data and data.error) or "invalid filter", vim.log.levels.WARN); return end
     local indices = data.matching_indices or data.source_rows or data.source_indices
     if type(indices) ~= "table" then
       return notify("filter response did not include matching source rows", vim.log.levels.WARN)

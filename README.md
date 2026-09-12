@@ -56,8 +56,8 @@ following commands are available:
 :QuerybookRun       " execute the statement under the cursor
 :QuerybookRun!      " explicitly allow a statement classified as a write
 :QuerybookInspect   " open the current result in a floating scratch window
-:QuerybookFilter    " filter the open inspector (JSONPath or shorthand)
-:QuerybookClearFilter " clear the inspector filter
+:QuerybookFilter    " local JSONPath filter over retained rows
+:QuerybookClearFilter " clear the local JSONPath filter
 :QuerybookPinRow    " pin or unpin the current inspector row
 :QuerybookCompareRows " compare current row with the pinned row
 :QuerybookExportRetained " export all retained rows
@@ -120,12 +120,16 @@ when the compact header truncates it.
 (including `null`), and `yp` copies the complete payload; all three use the
 retained typed cells, so decimals and large integers do not round.
 
-`:QuerybookFilter` sends a JSONPath or shorthand expression to the runner;
-invalid expressions leave the current view unchanged. Filtering is local to
-the retained result and resets to its first matching page on success. Pinning
-stores a source row index and handle, allowing comparison to survive paging
-and filtering. A successful re-run creates a new handle and clears inspector
-filter, pin, and expansion state; a failed re-run retains the previous result.
+`:QuerybookFilter` sends a JSONPath expression to the runner and evaluates it
+locally against every retained row. Shorthand starting with `@` is wrapped as
+`$[?(...)]`; the original SQL is never rewritten. Invalid expressions leave
+the current view unchanged. Pagination and Inspect `[r`/`]r` walk the matching
+rows. Clearing the filter restores the retained rows without re-executing SQL.
+A successful re-run creates a new handle and clears the local filter; a failed
+re-run retains the previous result. Numeric JSONPath comparisons follow RFC
+9535 / IEEE 754, so integers beyond 2^53 may collide. SQL NULL is JSON `null`;
+an empty string, `0`, and `false` remain distinct. Duplicate column names are
+ambiguous by label and can be addressed positionally through `$values`.
 
 Exports require an explicit scope (`retained`, `filtered`, or `full`), format,
 and a new path. The runner writes raw typed cells and reports progress and an
