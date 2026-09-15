@@ -65,12 +65,12 @@ for _, line in ipairs(boxed_lines) do
   assert(vim.fn.strdisplaywidth(line)==box_width, "every box line must share a right edge")
 end
 
-local filtered=render.lines({status="success",rows={{{kind="text",text="1"}},{{kind="text",text="2"}}},columns={{name="id"}},connection_name="p",database="db",duration_ms=4,view_active=true,view_source_rows={1},filter_expression="@.id == 2"},{preview_rows=10,max_columns=12,display_width=72})
+local filtered=render.lines({status="success",rows={{{kind="text",text="1"}},{{kind="text",text="2"}}},columns={{name="id"}},connection_name="p",database="db",duration_ms=4,view_active=true,view_source_rows={1},filter_expression="id == 2"},{preview_rows=10,max_columns=12,display_width=72})
 local filtered_lines=texts_of(filtered)
 local filtered_text=table.concat(filtered_lines,"\n")
 assert_width(filtered_lines, 72, "filtered result box fills display_width")
 assert(filtered_text:find("1 matching rows · 2 retained rows",1,true), "inline status shows matching vs retained")
-assert(filtered_text:find("local filter: @.id == 2",1,true), "inline status shows the local JSONPath")
+assert(filtered_text:find("local filter: id == 2",1,true), "inline status shows the local CEL filter")
 assert(filtered_text:find("│ 2",1,true), "inline page shows matching source rows")
 
 local db=vim.fn.tempname()..".sqlite3"

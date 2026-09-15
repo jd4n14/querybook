@@ -22,13 +22,13 @@ COMMANDS                                                        *querybook-comma
     compact field values. Structured cells expand lazily.
 
 :QuerybookFilter                                               *:QuerybookFilter*
-    Prompt for a JSONPath or shorthand expression and apply it locally to every
-    retained row. Shorthand starting with @ is wrapped as $[?(...)]. The SQL is
-    not modified. Invalid expressions leave the prior view unchanged. An empty
-    expression clears the filter.
+    Prompt for a CEL expression and apply it locally to every retained row.
+    Unique ResultSet columns are CEL variables. The SQL is not modified.
+    Invalid expressions leave the prior view unchanged. An empty expression
+    clears the filter.
 
 :QuerybookClearFilter                                     *:QuerybookClearFilter*
-    Clear the local JSONPath filter and return to all retained rows without
+    Clear the local CEL filter and return to all retained rows without
     re-executing SQL.
 
 :QuerybookPinRow                                             *:QuerybookPinRow*
@@ -84,9 +84,9 @@ INSPECTOR                                                     *querybook-inspect
 
 In a QuerybookInspect scratch window, use these normal-mode mappings:
 
-    [r / ]r      Move to the previous or next matching row. With a local
-                JSONPath filter this walks matching rows and keeps the original
-                source ordinal. Page boundaries are crossed inside Inspect.
+    [r / ]r      Move to the previous or next matching row. With a local CEL
+                filter this walks matching rows and keeps the original source
+                ordinal. Page boundaries are crossed inside Inspect.
     [p / ]p      Jump to the first matching row of the previous or next page.
     p            Pin or unpin the current source row. The pinned ordinal stays
                 visible while you keep navigating; full column-diff UI is still
@@ -116,39 +116,44 @@ are not rounded or clipped. A stale result continues to show its captured SQL
 and connection snapshot; a new successful execution creates a fresh handle and
 clears inspector state.
 
-JSONPATH FILTER                                              *querybook-jsonpath*
+CEL FILTER                                                         *querybook-cel*
 
-SQL queries the database. JSONPath queries the retained ResultSet. The runner
+SQL queries the database. CEL queries the retained ResultSet. The runner
 adds an automatic outer LIMIT 500 for interactive SELECTs; the filter then
 runs over those retained rows, not just the visible page.
 
     :QuerybookFilter
-    @.client_id == 1749 &&
-    @.data.weight > 0.4 &&
-    @.invoice_id == null
+    warehouse_id in [33, 102] &&
+    data.weight > 0.4 &&
+    invoice_id == null
 
-Shorthand starting with @ is wrapped as $[?(...)]. Full JSONPath such as
-$[?(@.client_id == 1749)] is accepted as-is. Evaluation uses the Go
-github.com/theory/jsonpath implementation of RFC 9535.
+Evaluation uses cel-go (cel.dev/cel-go). Unique column labels become CEL
+variables. Duplicate labels are rejected by name; use values[i] (0-based).
+Names that are not CEL identifiers, including reserved words such as in, are
+read through row["column-name"]. JSONPath remains only as an Inspect copy
+path (yj), not as a filter language.
 
 The ResultSet keeps original columns, order, types, NULL, DECIMAL text,
-timestamps, blobs, and driver metadata. JSONPath sees a temporary per-row
-object. Nested JSON is parsed only when the path traverses that column.
-Invalid JSON in a traversed cell is a miss, not a panic. SQL NULL is JSON
+timestamps, blobs, and driver metadata. CEL sees a temporary per-row
+activation. Nested JSON is parsed only when that column is referenced.
+Invalid JSON in a referenced cell is a miss, not a panic. SQL NULL is CEL
 null. An empty string, 0, and false do not match null.
 
-Missing properties compare as JSONPath Nothing (the comparison is false),
-not as SQL UNKNOWN. Existence $[?(@.invoice_id)] is true when the column is
-present, including SQL NULL, because the adapter always emits the key.
+A missing JSON property is not JSON null: data.missing == null does not
+match, while has(data.missing) is false. JSON null is data.invoice_id ==
+null when the key is present.
 
-Numeric comparisons follow IEEE 754. Integers beyond 2^53 may collide.
-Duplicate column labels are ambiguous by name; positional access uses
-@['$values'][i]. Pagination and Inspect [r / ]r walk matching rows. Clearing
-the filter restores the retained rows without running SQL again. A successful
-re-run drops the filter with the new result handle.
+SQL integers that fit int64 compare exactly. DECIMAL/NUMERIC cells compare
+as exact rationals against other decimals and integers; mixed comparisons
+with double use IEEE 754 on the decimal's float64 approximation. Duplicate
+column labels are ambiguous by name.
+
+Pagination and Inspect [r / ]r walk matching rows. Clearing the filter
+restores the retained rows without running SQL again. A successful re-run
+drops the filter with the new result handle.
 
 Export filtered uses matching retained rows. Export full re-executes the
-original SQL and does not translate JSONPath into WHERE.
+original SQL and does not translate CEL into WHERE.
 
 CONFIGURATION                                                  *querybook-config*
 
@@ -185,6 +190,16 @@ statements without an outer LIMIT receive a Go-runner `LIMIT 500`; explicit
 outer limits and nested or commented LIMIT text are preserved. The inline
 header reports this automatic limit separately from the visible row page and
 retention status.
+
+SQL COMPLETION                                                 *querybook-sqls*
+
+When `sqls` is on PATH, Querybook starts it for the active connection and
+attaches to `sql` and `mysql` buffers. Completion, hover, and signature help
+use that database's schema. Changing the active connection restarts sqls.
+Querybook does not execute SQL through sqls. If sqls is not installed,
+queries still run; only schema-aware completion is unavailable. Querybook
+disables Vim's default SQL omni maps (`<Left>`/`<Right>` -> sqlcomplete)
+because they open the expression register and flash a "Calculator" UI.
 
 TRANSPORT                                                     *querybook-transport*
 

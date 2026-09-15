@@ -76,7 +76,7 @@ runner.result("view", { result_handle = view.handle, offset = 0, limit = 1 }, fu
 assert(vim.wait(5000, function() return pages ~= nil or failure ~= nil end), "real page response")
 assert(not failure and pages.source_rows and pages.source_rows[1] == 0 and pages.total_rows == 20, "single row page preserves source ordinal")
 local filtered
-runner.result("filter", { result_handle = view.handle, filter = "@['$values'][0] >= 11 && @['$values'][0] <= 19" }, function(data, err) filtered, failure = data, err end)
+runner.result("filter", { result_handle = view.handle, filter = "n >= 11 && n <= 19" }, function(data, err) filtered, failure = data, err end)
 assert(vim.wait(5000, function() return filtered ~= nil or failure ~= nil end), "real all-retained filter response")
 assert(not failure and filtered.view_id and filtered.total_rows == 9, "filter evaluates all retained rows")
 local filtered_page
@@ -85,7 +85,7 @@ assert(vim.wait(5000, function() return filtered_page ~= nil or failure ~= nil e
 assert(not failure and filtered_page.source_rows and filtered_page.source_rows[1] == 11, "filtered page preserves source index")
 -- The accepted view is shared with the inline viewport. Use more than one
 -- page and verify the source ordinals remain attached to the immutable rows.
-local broad_filter = "@['$values'][0] >= 2 && @['$values'][0] <= 9 || @['$values'][0] >= 11 && @['$values'][0] <= 19"
+local broad_filter = "(n >= 2 && n <= 9) || (n >= 11 && n <= 19)"
 inspect_view.filter(view, broad_filter)
 assert(vim.wait(5000, function() return view.filter == broad_filter and view.matching_count == 17 end), "inspector accepts all retained rows beyond first page")
 local inline = result_text(notebook_buf)

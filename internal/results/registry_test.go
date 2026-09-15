@@ -130,7 +130,7 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, count, err := r.Filter(id, "@.id == 1750")
+	view, count, err := r.Filter(id, "id == 1750")
 	if err != nil || count != 1 {
 		t.Fatalf("numeric filter view=%s count=%d err=%v", view, count, err)
 	}
@@ -138,7 +138,7 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	if err != nil || len(ordinals) != 1 || ordinals[0] != 1 {
 		t.Fatalf("numeric filter ordinals=%#v err=%v", ordinals, err)
 	}
-	view, count, err = r.Filter(id, "@['$values'][0] == null")
+	view, count, err = r.Filter(id, "values[0] == null")
 	if err != nil || count != 1 {
 		t.Fatalf("SQL null filter view=%s count=%d err=%v", view, count, err)
 	}
@@ -146,7 +146,7 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	if len(ordinals) != 1 || ordinals[0] != 2 {
 		t.Fatalf("SQL null ordinals=%#v", ordinals)
 	}
-	view, count, err = r.Filter(id, "@.flag == false")
+	view, count, err = r.Filter(id, "flag == false")
 	if err != nil || count != 2 {
 		t.Fatalf("boolean filter view=%s count=%d err=%v", view, count, err)
 	}
@@ -154,13 +154,13 @@ func TestExactNumericFilterAndNullBinaryDistinctions(t *testing.T) {
 	if len(ordinals) != 2 || ordinals[0] != 0 || ordinals[1] != 1 {
 		t.Fatalf("boolean ordinals=%#v", ordinals)
 	}
-	view, count, err = r.Filter(id, "@.missing == 1")
-	if err != nil || count != 0 {
-		t.Fatalf("missing property should be a JSONPath miss, not a compile error: view=%s count=%d err=%v", view, count, err)
+	_, _, err = r.Filter(id, "missing == 1")
+	if err == nil {
+		t.Fatal("unknown column should be a CEL compile error")
 	}
 }
 
-func TestNestedJSONPathAndGroupedPredicates(t *testing.T) {
+func TestNestedCELAndGroupedPredicates(t *testing.T) {
 	r := New(Options{MaxBytes: 1 << 20, MaxSets: 1})
 	m := Metadata{Columns: []protocol.Column{{Name: "client_id", DatabaseType: "INTEGER"}, {Name: "data", DatabaseType: "JSON"}, {Name: "invoice_id", DatabaseType: "INTEGER"}}}
 	rows := [][]protocol.Cell{
@@ -172,7 +172,7 @@ func TestNestedJSONPathAndGroupedPredicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view, count, err := r.Filter(id, "@.client_id == 1749 && @.data.weight > 0.4 && @.invoice_id == null")
+	view, count, err := r.Filter(id, "client_id == 1749 && data.weight > 0.4 && invoice_id == null")
 	if err != nil || count != 1 {
 		t.Fatalf("nested filter view=%s count=%d err=%v", view, count, err)
 	}
@@ -180,11 +180,11 @@ func TestNestedJSONPathAndGroupedPredicates(t *testing.T) {
 	if len(ordinals) != 1 || ordinals[0] != 0 {
 		t.Fatalf("nested ordinals=%#v", ordinals)
 	}
-	view, count, err = r.Filter(id, "$[?((@.client_id == 1749 || @.client_id == 1748) && @.data.weight > 0.8)]")
+	view, count, err = r.Filter(id, "(client_id == 1749 || client_id == 1748) && data.weight > 0.8")
 	if err != nil || count != 1 {
 		t.Fatalf("grouped filter view=%s count=%d err=%v", view, count, err)
 	}
-	view, count, err = r.Filter(id, `@.data['weight'] == 0.5`)
+	view, count, err = r.Filter(id, `data["weight"] == 0.5`)
 	if err != nil || count != 1 {
 		t.Fatalf("bracket nested filter view=%s count=%d err=%v", view, count, err)
 	}
@@ -194,11 +194,11 @@ func TestFailedFilterLeavesExistingView(t *testing.T) {
 	r := New(Options{MaxBytes: 1 << 20, MaxSets: 1})
 	m := testMeta()
 	id, _ := r.Retain(m, testRows())
-	view, _, err := r.Filter(id, "@.id == 9007199254740993")
+	view, _, err := r.Filter(id, "id == 9007199254740993")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = r.Filter(id, "@.id === 1"); err == nil {
+	if _, _, err = r.Filter(id, "id === 1"); err == nil {
 		t.Fatal("failed filter accepted")
 	}
 	_, ordinals, err := r.PageView(id, view, 0, 10)

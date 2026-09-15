@@ -6,10 +6,8 @@ package results
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"sync"
 	"time"
 
@@ -282,21 +280,18 @@ func (r *Registry) ViewIndices(handle, viewID string) ([]int, error) {
 	return append([]int(nil), indices...), nil
 }
 
-// Filter evaluates a bounded row predicate over the complete retained set.
-// It returns a new view ID only after parsing and evaluating every row has
+// Filter evaluates a CEL row predicate over the complete retained set.
+// It returns a new view ID only after compiling and evaluating every row has
 // succeeded, so the previous view is never corrupted by a bad expression.
 func (r *Registry) Filter(handle, expression string) (string, int, error) {
-	compiled, err := compileFilter(expression)
-	if err != nil {
-		return "", 0, err
-	}
 	r.mu.RLock()
 	e, err := r.getLocked(handle)
 	if err != nil {
 		r.mu.RUnlock()
 		return "", 0, err
 	}
-	if err := compiled.validate(e.meta); err != nil {
+	compiled, err := compileFilter(expression, e.meta)
+	if err != nil {
 		r.mu.RUnlock()
 		return "", 0, err
 	}
@@ -320,15 +315,6 @@ func (r *Registry) Filter(handle, expression string) (string, int, error) {
 	e.views[viewID] = append([]int(nil), selected...)
 	r.sets[handle] = e
 	return viewID, len(selected), nil
-}
-
-// JSONNumber is exposed for tests and adapters that need to inspect a raw
-// numeric literal without converting through float64.
-func JSONNumber(raw string) (json.Number, error) {
-	if _, ok := new(big.Rat).SetString(raw); !ok {
-		return "", errors.New("invalid JSON number")
-	}
-	return json.Number(raw), nil
 }
 
 // RawBinary returns the original bytes represented by a binary cell.

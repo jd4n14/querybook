@@ -18,10 +18,11 @@
 :QuerybookRun	querybook.txt	/*:QuerybookRun*
 :QuerybookToggle	querybook.txt	/*:QuerybookToggle*
 Querybook	querybook.txt	/*Querybook*
+querybook-cel	querybook.txt	/*querybook-cel*
 querybook-commands	querybook.txt	/*querybook-commands*
 querybook-config	querybook.txt	/*querybook-config*
 querybook-inspector	querybook.txt	/*querybook-inspector*
-querybook-jsonpath	querybook.txt	/*querybook-jsonpath*
+querybook-sqls	querybook.txt	/*querybook-sqls*
 querybook-transport	querybook.txt	/*querybook-transport*
 querybook.contents	querybook.txt	/*querybook.contents*
 querybook.txt	querybook.txt	/*querybook.txt*

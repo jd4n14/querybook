@@ -188,7 +188,7 @@ assert(line_with(state, "payload"):find("▶", 1, true), "structured values star
 assert(not child_line(state, "products") and not child_line(state, "nested"), "JSON children are not listed until expand")
 assert(count_op(calls, "view") == 0, "opening Inspect does not page the runner")
 assert(count_op(calls, "cell") == 0, "opening Inspect does not parse JSON")
-assert(count_op(calls, "filter") == 0, "opening Inspect does not re-run JSONPath")
+assert(count_op(calls, "filter") == 0, "opening Inspect does not re-run CEL")
 
 -- Local matching-row navigation, including page boundaries, without runner ops.
 local views = count_op(calls, "view")
@@ -209,12 +209,12 @@ assert(state.current_match == 3, "previous page returns to the start of the prev
 vim.api.nvim_buf_call(state.buf, function() vim.cmd("normal [r") end)
 assert(state.current_match == 2 and state.current_source == 1, "previous matching row")
 
--- JSONPath filter walks matching rows, not all retained rows.
+-- CEL filter walks matching rows, not all retained rows.
 inspect.filter(state, "bad")
 assert(state.filter == nil and state.matching_count == 12 and view_updates == 0, "invalid filter keeps previous view")
-inspect.filter(state, "@.id")
-assert(state.filter == "@.id" and state.matching_count == 5 and state.current_source == 0 and result.view_active and result.view_source_rows[1] == 0 and view_updates == 1, "valid filter maps matching source index")
-assert(text():find("local filter: @.id", 1, true), "inspector shows the active local filter")
+inspect.filter(state, "id in [1, 4, 7, 10, 12]")
+assert(state.filter == "id in [1, 4, 7, 10, 12]" and state.matching_count == 5 and state.current_source == 0 and result.view_active and result.view_source_rows[1] == 0 and view_updates == 1, "valid filter maps matching source index")
+assert(text():find("local filter: id in [1, 4, 7, 10, 12]", 1, true), "inspector shows the active local filter")
 assert(text():find("matching 1/5", 1, true) and text():find("source 1/12", 1, true), "filtered inspect starts at matching 1 / source 1")
 views, cells = count_op(calls, "view"), count_op(calls, "cell")
 vim.api.nvim_buf_call(state.buf, function() vim.cmd("normal ]r") end)
@@ -309,7 +309,7 @@ inspect.sync(state)
 assert(text():find("STALE", 1, true), "stale header is visible in Inspect")
 assert(state.handle == "h1" and state.current_source == 0, "stale Inspect does not mix another execution")
 result.generation = 2
-inspect.filter(state, "@.id")
+inspect.filter(state, "id in [1, 4, 7, 10, 12]")
 assert(state.filter == nil, "callbacks from a newer generation do not rewrite Inspect")
 
 local export_notifications = {}

@@ -105,15 +105,15 @@ func TestSQLiteExpressionRuntimeKindsDriveExactFilters(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.want == "integer" {
-				view, count, err := r.Filter(id, "@.n >= 11")
+				view, count, err := r.Filter(id, "n >= 11")
 				if err != nil || count != 1 || view == "" {
 					t.Fatalf("numeric filter view=%q count=%d err=%v", view, count, err)
 				}
 			} else {
-				if _, count, err := r.Filter(id, "@.n >= 11"); err != nil || count != 0 {
+				if _, count, err := r.Filter(id, "n >= 11"); err != nil || count != 0 {
 					t.Fatalf("text accepted numeric predicate count=%d err=%v", count, err)
 				}
-				if _, count, err := r.Filter(id, `@.n == "001"`); err != nil || count != 1 {
+				if _, count, err := r.Filter(id, `n == "001"`); err != nil || count != 1 {
 					t.Fatalf("text equality count=%d err=%v", count, err)
 				}
 			}

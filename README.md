@@ -12,6 +12,7 @@ or inline data editor.
 
 - Neovim 0.10 or newer (the plugin uses `jobstart` and virtual lines).
 - Go 1.23+ to build the child runner (`make build`).
+- Optional: [`sqls`](https://github.com/sqls-server/sqls) on `PATH` for schema-aware SQL completion.
 
 The SQLite driver is `modernc.org/sqlite`: builds are larger and slower than a
 CGo driver, but release binaries need no system SQLite headers or compiler.
@@ -56,8 +57,8 @@ following commands are available:
 :QuerybookRun       " execute the statement under the cursor
 :QuerybookRun!      " explicitly allow a statement classified as a write
 :QuerybookInspect   " open the current result in a floating scratch window
-:QuerybookFilter    " local JSONPath filter over retained rows
-:QuerybookClearFilter " clear the local JSONPath filter
+:QuerybookFilter    " local CEL filter over retained rows
+:QuerybookClearFilter " clear the local CEL filter
 :QuerybookPinRow    " pin or unpin the current inspector row
 :QuerybookCompareRows " compare current row with the pinned row
 :QuerybookExportRetained " export all retained rows
@@ -97,6 +98,11 @@ those profiles or from environment variables.
 Set `connection_store_path` only when an isolated metadata SQLite file is
 needed for tests or a deliberately separate local profile store.
 
+If `sqls` is on `PATH`, Querybook starts it for the active connection and
+attaches it to SQL buffers so completion uses that database's schema.
+Changing the active connection restarts sqls. Querybook still runs queries
+when sqls is not installed.
+
 ## Current boundary
 
 Inline output is a compact viewport showing 10 rows by default. Use
@@ -111,7 +117,7 @@ row and column pages are labelled with the current range. The runner retains at 
 `QuerybookInspect` opens a floating, navigable view with connection profile
 and database captured at execution time. It walks the already retained
 matching rows (and their original source ordinals) without re-running SQL or
-JSONPath. `[r`/`]r` move through matching rows, including across grid page
+CEL. `[r`/`]r` move through matching rows, including across grid page
 boundaries, and `[p`/`]p` jump matching pages. `p` pins the current source
 row. `Enter` or `za` expands a JSON field lazily; `gR` toggles raw/formatted
 presentation for that cell. `K` shows driver column metadata (type, nullable,
@@ -121,16 +127,18 @@ the current node, `yr` the exact row as ordered JSON (including `null`), and
 `yp` the complete payload. Copies use retained typed cells, so decimals and
 large integers do not round.
 
-`:QuerybookFilter` sends a JSONPath expression to the runner and evaluates it
-locally against every retained row. Shorthand starting with `@` is wrapped as
-`$[?(...)]`; the original SQL is never rewritten. Invalid expressions leave
-the current view unchanged. Pagination and Inspect `[r`/`]r` walk the matching
-rows. Clearing the filter restores the retained rows without re-executing SQL.
+`:QuerybookFilter` sends a CEL expression to the runner and evaluates it
+locally against every retained row. Unique column labels are CEL variables;
+the original SQL is never rewritten. Invalid expressions leave the current
+view unchanged. Pagination and Inspect `[r`/`]r` walk the matching rows.
+Clearing the filter restores the retained rows without re-executing SQL.
 A successful re-run creates a new handle and clears the local filter; a failed
-re-run retains the previous result. Numeric JSONPath comparisons follow RFC
-9535 / IEEE 754, so integers beyond 2^53 may collide. SQL NULL is JSON `null`;
-an empty string, `0`, and `false` remain distinct. Duplicate column names are
-ambiguous by label and can be addressed positionally through `$values`.
+re-run retains the previous result. SQL integers that fit int64 compare
+exactly. DECIMAL/NUMERIC cells compare as exact rationals against integers
+and other decimals; mixed comparisons with double use IEEE 754. SQL NULL is
+CEL `null`; an empty string, `0`, and `false` remain distinct. Duplicate
+column names are ambiguous by label and are addressed positionally through
+`values[i]`. Names that are not CEL identifiers use `row["column-name"]`.
 
 Exports require an explicit scope (`retained`, `filtered`, or `full`), format,
 and a new path. The runner writes raw typed cells and reports progress and an
@@ -159,6 +167,7 @@ The focused test suite uses the Go runner and Neovim headlessly:
 ```sh
 nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/run.lua
 nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/connections_ui.lua
+nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/sqls.lua
 ```
 
 `make test-integration` accepts an isolated disposable MySQL 8.4 socket through
