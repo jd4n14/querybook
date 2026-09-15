@@ -1,168 +1,273 @@
 # Querybook
 
-Querybook is a small SQL notebook for Neovim. SQL stays as normal, editable
-buffer text while each execution renders its result below the statement that
-produced it. Multiple statements can therefore be investigated together.
+A SQL notebook for Neovim. Queries stay as ordinary buffer text; each execution
+renders its result beneath the statement that produced it. Several statements
+can be investigated in the same file without leaving the editor.
 
-The runner supports SQLite and MySQL through one on-demand Go child per Neovim
-instance. It intentionally does not build a schema browser
-or inline data editor.
+The plugin talks to a local Go runner over a private JSONL protocol. Drivers
+today are SQLite and MySQL. Querybook is not a schema browser or an inline
+data editor.
+
+## Features
+
+- Inline result tables anchored to each statement, with independent stale and
+  error state
+- Native connection manager; passwords never live in Lua config or YAML
+- macOS Keychain storage for credentials (`com.jd4n14.querybook.connections`)
+- Read-only by default; writes require `:QuerybookRun!` or `allow_writes`
+- Local [CEL](https://cel.dev) filters over retained rows (the SQL is not rewritten)
+- Floating inspector for typed cells, JSON expansion, and lossless copies
+- CSV / JSONL export of retained, filtered, or full results
+- Optional [sqls](https://github.com/sqls-server/sqls) completion against the
+  active connection's real schema
 
 ## Requirements
 
-- Neovim 0.10 or newer (the plugin uses `jobstart` and virtual lines).
-- Go 1.23+ to build the child runner (`make build`).
-- Optional: [`sqls`](https://github.com/sqls-server/sqls) on `PATH` for schema-aware SQL completion.
+| Tool | Notes |
+|------|--------|
+| Neovim 0.10+ | Uses `jobstart` and virtual lines |
+| Go 1.23+ | Builds `bin/querybook-runner` (`make build`) |
+| sqls (optional) | Schema-aware completion when present on `PATH` |
 
-The SQLite driver is `modernc.org/sqlite`: builds are larger and slower than a
-CGo driver, but release binaries need no system SQLite headers or compiler.
+SQLite uses [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite):
+binaries are larger than a CGo build, but they do not need system SQLite
+headers or a C compiler.
 
 ## Install
 
-For a native Neovim package install:
+Build the runner once after clone:
 
 ```sh
-git clone https://github.com/jd4n14/querybook.git ~/.local/share/nvim/site/pack/querybook/start/querybook
+make build
 ```
 
-For a quick SQLite demo from a checkout, open the included notebook and run
-`:QuerybookRun` on each query:
-
-```sh
-nvim --clean --cmd "set rtp^=$PWD" examples/demo.sql
-```
-
-With `lazy.nvim`:
+### lazy.nvim
 
 ```lua
 {
-  dir = "/path/to/querybook",
+  "jd4n14/querybook",
+  build = "make build",
   config = function()
     require("querybook").setup({})
   end,
 }
 ```
 
-Use `:QuerybookConnections` or normal-mode `qC` to manage saved connections.
-The rounded native list supports Enter (select), `a` (add), `e` (edit
-metadata), `p` (change password), `d` (delete with confirmation), `t` (test),
-and `q` (close). Passwords are captured only by the hidden input prompt for
-create or password changes. They are never editable buffer fields or stored in
-Lua configuration. `qc` remains the existing clear mapping.
+If you use [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig) and it
+would start its own `sqls` client, disable that server so Querybook owns the
+process:
 
-The plugin also installs defaults when no configuration is supplied. The
-following commands are available:
-
-```vim
-:QuerybookRun       " execute the statement under the cursor
-:QuerybookRun!      " explicitly allow a statement classified as a write
-:QuerybookInspect   " open the current result in a floating scratch window
-:QuerybookFilter    " local CEL filter over retained rows
-:QuerybookClearFilter " clear the local CEL filter
-:QuerybookPinRow    " pin or unpin the current inspector row
-:QuerybookCompareRows " compare current row with the pinned row
-:QuerybookExportRetained " export all retained rows
-:QuerybookExportFiltered " export rows matching the current filter
-:QuerybookExportFull " export the full provider result when available
-:QuerybookRefresh   " re-run the result under the cursor
-:QuerybookClear     " clear the current result
-:QuerybookClear!    " clear all results in the buffer
-:QuerybookToggle    " collapse or expand only the result under the cursor
-:QuerybookNextPage  " show the next retained row page
-:QuerybookPrevPage  " show the previous retained row page
-:QuerybookNextColumn " show the next retained column page
-:QuerybookPrevColumn " show the previous retained column page
-:QuerybookConnections " open saved connection manager
-:QuerybookConnectionsImport name " explicitly import metadata from an old config profile
+```lua
+{
+  "neovim/nvim-lspconfig",
+  opts = { servers = { sqls = { enabled = false } } },
+}
 ```
 
-Select lines in visual mode before `:QuerybookRun` to execute that selection;
-multiple statements receive independent result anchors. A result is marked
-stale as soon as its statement text changes.
-An execution error is rendered below the statement and does not delete the
-previous successful result until a new successful execution replaces it. Each
-statement has one result slot, so repeated failures do not stack duplicate
-error blocks; a later success replaces that slot. Results from statements that
-remain in the notebook stay independently anchored.
+### Native packages
 
-## Connection configuration
+```sh
+git clone https://github.com/jd4n14/querybook.git \
+  ~/.local/share/nvim/site/pack/querybook/start/querybook
+cd ~/.local/share/nvim/site/pack/querybook/start/querybook
+make build
+```
 
-Connections are persisted by the Go runner and selected by managed UUID. The
-metadata form accepts `name`, `driver`, `host`, `port`, `database`, `username`,
-`socket`, `path`, and `charset`; SQLite requires `path`, while MySQL uses its
-host/socket, port, username, and database fields. Set `runner_path` for a
-custom installation; otherwise run `make build` to create
-`bin/querybook-runner`. Existing inline profiles can be imported as metadata
-from the manager when the user requests it; passwords are never read from
-those profiles or from environment variables.
-Set `connection_store_path` only when an isolated metadata SQLite file is
-needed for tests or a deliberately separate local profile store.
+### Quick demo
 
-If `sqls` is on `PATH`, Querybook starts it for the active connection and
-attaches it to SQL buffers so completion uses that database's schema.
-Changing the active connection restarts sqls. Querybook still runs queries
-when sqls is not installed.
+From a checkout, open the included notebook and run `:QuerybookRun` on each
+query:
 
-## Current boundary
+```sh
+nvim --clean --cmd "set rtp^=$PWD" examples/demo.sql
+```
 
-Inline output is a compact viewport showing 10 rows by default. Use
-`:QuerybookNextPage`/`:QuerybookPrevPage` or the `<leader>qN`/`<leader>qP`
-mappings to page retained rows, and `:QuerybookNextColumn`/`:QuerybookPrevColumn`
-or `<leader>qL`/`<leader>qH` to page columns. Configure `preview_rows` and
-`max_columns` to change the page size; legacy `max_rows` is honored as a
-preview override when `preview_rows` is not set. The inline result table fills
-the current window and clips cell values to the allocated column width. Hidden
-row and column pages are labelled with the current range. The runner retains at most `max_retained_rows` rows or
-`max_retained_bytes` bytes (defaults 10000 and 16 MiB), and labels truncation.
-`QuerybookInspect` opens a floating, navigable view with connection profile
-and database captured at execution time. It walks the already retained
-matching rows (and their original source ordinals) without re-running SQL or
-CEL. `[r`/`]r` move through matching rows, including across grid page
-boundaries, and `[p`/`]p` jump matching pages. `p` pins the current source
-row. `Enter` or `za` expands a JSON field lazily; `gR` toggles raw/formatted
-presentation for that cell. `K` shows driver column metadata (type, nullable,
-size) and `gQ` shows the full SQL when the compact header truncates it.
-`yv` copies the exact field value, `yn` the column name, `yj` the JSONPath of
-the current node, `yr` the exact row as ordered JSON (including `null`), and
-`yp` the complete payload. Copies use retained typed cells, so decimals and
-large integers do not round.
+## Quick start
 
-`:QuerybookFilter` sends a CEL expression to the runner and evaluates it
-locally against every retained row. Unique column labels are CEL variables;
-the original SQL is never rewritten. Invalid expressions leave the current
-view unchanged. Pagination and Inspect `[r`/`]r` walk the matching rows.
-Clearing the filter restores the retained rows without re-executing SQL.
-A successful re-run creates a new handle and clears the local filter; a failed
-re-run retains the previous result. SQL integers that fit int64 compare
-exactly. DECIMAL/NUMERIC cells compare as exact rationals against integers
-and other decimals; mixed comparisons with double use IEEE 754. SQL NULL is
-CEL `null`; an empty string, `0`, and `false` remain distinct. Duplicate
-column names are ambiguous by label and are addressed positionally through
+1. Open a `.sql` buffer.
+2. `:QuerybookConnections` (or `qC`) and add a SQLite or MySQL connection.
+3. Place the cursor in a statement and run `:QuerybookRun`.
+4. Inspect the result with `:QuerybookInspect`, page with `<leader>qN` /
+   `<leader>qP`, or filter retained rows with `:QuerybookFilter`.
+
+Visual-mode `:QuerybookRun` executes the selection; each statement gets its own
+result. Editing a statement marks that result stale. A later error replaces the
+previous error for that statement without stacking blocks; a later success
+replaces the slot entirely.
+
+## Connections
+
+`:QuerybookConnections` opens a native list:
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Select the connection |
+| `a` | Add |
+| `e` | Edit metadata |
+| `p` | Change password |
+| `d` | Delete (with confirmation) |
+| `t` | Test |
+| `q` | Close |
+
+The metadata form accepts `name`, `driver`, `host`, `port`, `database`,
+`username`, `socket`, `path`, and `charset`. SQLite requires `path`. MySQL
+uses host or socket, port, username, and database.
+
+Passwords are captured only by a hidden prompt on create or password change.
+They are never buffer fields, Lua config, environment variables, or files.
+`:QuerybookConnectionsImport {name}` copies metadata from a legacy config
+profile; passwords are ignored.
+
+Set `runner_path` if the binary is not at `bin/querybook-runner`. Set
+`connection_store_path` only for an isolated metadata SQLite file (tests or a
+separate local store).
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `:QuerybookRun` | Execute the statement under the cursor |
+| `:QuerybookRun!` | Allow a statement classified as a write |
+| `:QuerybookInspect` | Open the current result in a floating scratch window |
+| `:QuerybookFilter` | Local CEL filter over retained rows |
+| `:QuerybookClearFilter` | Clear the local CEL filter |
+| `:QuerybookPinRow` | Pin or unpin the current inspector row |
+| `:QuerybookCompareRows` | Compare the current row with the pinned row |
+| `:QuerybookExportRetained` | Export all retained rows |
+| `:QuerybookExportFiltered` | Export rows matching the current filter |
+| `:QuerybookExportFull` | Export the full provider result when available |
+| `:QuerybookRefresh` | Re-run the result under the cursor |
+| `:QuerybookClear` | Clear the current result |
+| `:QuerybookClear!` | Clear all results in the buffer |
+| `:QuerybookToggle` | Collapse or expand the result under the cursor |
+| `:QuerybookNextPage` / `:QuerybookPrevPage` | Page retained rows |
+| `:QuerybookNextColumn` / `:QuerybookPrevColumn` | Page retained columns |
+| `:QuerybookConnections` | Open the connection manager |
+| `:QuerybookConnectionsImport {name}` | Import metadata from a legacy profile |
+
+## Default mappings
+
+| Mapping | Where | Action |
+|---------|-------|--------|
+| `qC` | Global | Connection manager |
+| `qc` | Global | Clear current result |
+| `<leader>qN` / `<leader>qP` | SQL buffer after a run | Next / previous row page |
+| `<leader>qL` / `<leader>qH` | SQL buffer after a run | Next / previous column page |
+
+## Inspector
+
+`:QuerybookInspect` walks already retained matching rows. It does not re-run
+SQL or CEL. Connection profile and database are captured at execution time.
+
+| Key | Action |
+|-----|--------|
+| `[r` / `]r` | Previous / next matching row (crosses grid pages) |
+| `[p` / `]p` | Jump matching pages |
+| `p` | Pin or unpin the current source row |
+| `Enter` / `za` | Expand a JSON field lazily |
+| `gR` | Toggle raw / formatted presentation for that cell |
+| `K` | Driver column metadata (type, nullable, size) |
+| `gQ` | Full SQL when the compact header truncates it |
+| `yv` | Copy the exact field value |
+| `yn` | Copy the column name |
+| `yj` | Copy the JSONPath of the current node |
+| `yr` | Copy the exact row as ordered JSON (including `null`) |
+| `yp` | Copy the complete payload |
+| `q` | Close |
+
+Copies use retained typed cells, so decimals and large integers do not round.
+
+## Local filters (CEL)
+
+SQL queries the database. CEL queries the retained result.
+
+```vim
+:QuerybookFilter
+warehouse_id in [33, 102] && data.weight > 0.4 && invoice_id == null
+```
+
+Unique column labels become CEL variables. Duplicate labels are addressed with
 `values[i]`. Names that are not CEL identifiers use `row["column-name"]`.
 
-Exports require an explicit scope (`retained`, `filtered`, or `full`), format,
-and a new path. The runner writes raw typed cells and reports progress and an
-export ID for cancellation. Full export includes the original execution SQL
-and connection snapshot; the automatic outer `LIMIT 500` and retention state
-are shown whenever they affect what is available.
+- Invalid expressions leave the current view unchanged.
+- Pagination and Inspect `[r` / `]r` walk matching rows.
+- Clearing the filter restores retained rows without re-executing SQL.
+- A successful re-run creates a new handle and drops the filter; a failed
+  re-run keeps the previous result.
+- SQL integers that fit `int64` compare exactly. `DECIMAL` / `NUMERIC` compare
+  as rationals against integers and other decimals; mixed comparisons with
+  double use IEEE 754. SQL `NULL` is CEL `null`; empty string, `0`, and
+  `false` remain distinct.
 
-Rows are positional arrays and columns are ordered metadata objects, so
-duplicate labels remain lossless. Cells are null, text, or base64 binary cells;
-exact numeric spellings, empty strings, literal `NULL`, Unicode, and arbitrary
-bytes are preserved. Sessions are isolated per execution. Unforced reads use
-driver-level read-only boundaries; `:QuerybookRun!` or `allow_writes=true` is
-required for writes. A visual selection containing multiple statements creates
-an independent result for each statement. For a top-level `SELECT` without an
-outer `LIMIT`, the Go runner adds an authoritative `LIMIT 500` while
-preserving the SQL buffer. Strings, comments, subqueries, CTE limits, explicit
-outer limits, and unsupported forms are handled conservatively. The header
-reports the automatic limit separately from the visible 10-row viewport and
-retention status. Snapshots, semantic comparison, and DDL lookup remain out
-of scope.
+See `:help querybook-cel` for the full evaluation rules.
+
+## Export
+
+Exports require an explicit scope (`retained`, `filtered`, or `full`), a format
+(CSV or JSONL), and a new path. Existing files are never overwritten. The
+runner writes raw typed cells and reports progress plus an export ID for
+cancellation.
+
+Full export includes the original execution SQL and connection snapshot. The
+automatic outer `LIMIT 500` and retention bounds are reported whenever they
+affect what is available.
+
+## SQL completion
+
+When `sqls` is on `PATH`, Querybook starts a `querybook-sqls` client for the
+active connection and attaches it to `sql` / `mysql` buffers. Changing the
+active connection (or updating its password) restarts sqls. Querybook does not
+execute SQL through sqls, and it does not write a `~/.config/sqls/config.yml`.
+
+If sqls is missing, queries still run; only schema-aware completion is
+unavailable.
+
+Querybook also disables Vim's default SQL omni maps (`<Left>` / `<Right>` →
+`sqlcomplete`), which otherwise flash an expression-register UI.
+
+## Configuration
+
+```lua
+require("querybook").setup({
+  preview_rows = 10,          -- rows per inline page
+  max_columns = 12,           -- columns per inline page
+  timeout_ms = 30000,
+  max_retained_rows = 10000,
+  max_retained_bytes = 16 * 1024 * 1024,
+  batch_rows = 200,
+  batch_bytes = 512 * 1024,
+  allow_writes = false,
+  runner_path = nil,          -- defaults to bin/querybook-runner
+  connection_store_path = nil,
+})
+```
+
+`max_rows` is still honored as a preview override when `preview_rows` is not
+set. The inline table fills the current window and clips cells to the allocated
+column width. Hidden row and column pages are labelled with the current range.
+
+For a top-level `SELECT` without an outer `LIMIT`, the runner adds an
+authoritative `LIMIT 500` while leaving the buffer SQL unchanged. Nested
+limits, comments, CTEs, and explicit outer limits are left alone. The header
+reports that automatic limit separately from the 10-row viewport and retention
+status.
+
+Rows are positional arrays and columns are ordered metadata, so duplicate
+labels stay lossless. Cells are `null`, text, or base64 binary.
+
+## Safety
+
+Unforced reads use driver-level read-only boundaries. Writes need
+`:QuerybookRun!` or `allow_writes = true`. Sessions are isolated per execution;
+there is no persistent SQL session or shared daemon across Neovim instances.
 
 ## Tests
 
-The focused test suite uses the Go runner and Neovim headlessly:
+```sh
+make test
+```
+
+Focused Neovim suites:
 
 ```sh
 nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/run.lua
@@ -173,3 +278,13 @@ nvim --headless -u NONE -c "set rtp^=$PWD" -l tests/sqls.lua
 `make test-integration` accepts an isolated disposable MySQL 8.4 socket through
 `QUERYBOOK_MYSQL_SOCKET` and related connection variables. It never selects an
 application database by default.
+
+## Documentation
+
+- `:help querybook` — commands, inspector, CEL, configuration, and transport
+- `examples/demo.sql` — two-statement notebook for a first run
+
+## Out of scope
+
+Snapshots, semantic comparison, DDL lookup, a schema browser, and an inline
+data editor are intentionally out of scope.
