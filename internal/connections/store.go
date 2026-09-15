@@ -94,8 +94,9 @@ func securePermissions(path string) error {
 	return nil
 }
 
-func (s *Store) Path() string { return s.path }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Path() string     { return s.path }
+func (s *Store) Close() error     { return s.db.Close() }
+func (s *Store) ActiveID() string { return s.activeID() }
 
 func (s *Store) init() error {
 	for _, q := range []string{

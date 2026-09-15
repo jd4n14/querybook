@@ -59,7 +59,18 @@ local function normalize(item)
   return c
 end
 
+local function set_active(id)
+  if M._active_id == id then return end
+  M._active_id = id
+  if M._active_listener then M._active_listener(id) end
+end
+
+function M.set_active_listener(fn)
+  M._active_listener = fn
+end
+
 local function apply_response(event)
+  -- event.sqls may contain passwd and must not be copied into the cache.
   local list = event.connections or event.items
   if type(list) == "table" then
     M._connections = {}
@@ -71,8 +82,8 @@ local function apply_response(event)
     local c = normalize(event.connection)
     if c.connection_id then M._connections[c.connection_id] = c end
   end
-  if event.active_connection_id ~= nil then M._active_id = event.active_connection_id end
-  if event.connection_id and event.op == "select" then M._active_id = event.connection_id end
+  if event.active_connection_id ~= nil then set_active(event.active_connection_id) end
+  if event.connection_id and event.op == "select" then set_active(event.connection_id) end
 end
 
 function M.setup(config)
@@ -80,7 +91,9 @@ function M.setup(config)
   M.config = config or {}
   local new_store = M.config.connection_store_path or M.config.store_path
   if old_store ~= nil and old_store ~= new_store then
+    local prev = M._active_id
     M._connections, M._active_id, M._loading, M._waiters = {}, nil, false, {}
+    if M._active_listener and prev ~= nil then M._active_listener(nil) end
   end
   -- Older configurations could contain an inline password. Remove the field
   -- immediately and never inspect its value or use it as an execution path.
@@ -118,7 +131,7 @@ function M.ensure_active(callback)
     local c = M._active_id and M._connections[M._active_id]
     if not c and M.config and M.config.active_connection and M._connections[M.config.active_connection] then
       c = M._connections[M.config.active_connection]
-      M._active_id = c.connection_id
+      set_active(c.connection_id)
     end
     -- The built-in SQLite notebook remains zero-configuration. This is the
     -- only automatic metadata bootstrap; legacy MySQL profiles require an
@@ -258,6 +271,9 @@ local function mutate(op, payload, after)
   runner.connection(op, payload, function(event, err)
     if err then notify(err, vim.log.levels.ERROR); return end
     apply_response(event)
+    if (op == "update" or op == "set_password") and payload.connection_id and payload.connection_id == M._active_id and M._active_listener then
+      M._active_listener(M._active_id, true)
+    end
     if after then after(event) end
     reopen_list()
     redraw_list()
@@ -330,7 +346,7 @@ function M.open()
   vim.keymap.set("n", "d", function()
     local id = id_or_warn(); if not id then return end
     if vim.fn.confirm("Delete " .. tostring(M._connections[id].name or id) .. "?", "&Cancel\n&Delete", 1) == 2 then
-      mutate("delete", { connection_id = id }, function() M._connections[id] = nil; if M._active_id == id then M._active_id = nil end end)
+      mutate("delete", { connection_id = id }, function() M._connections[id] = nil; if M._active_id == id then set_active(nil) end end)
     end
   end, { buffer = list_buf, silent = true })
   vim.keymap.set("n", "t", function()

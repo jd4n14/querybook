@@ -45,6 +45,23 @@ func TestConnectionProtocolRejectsInlineSecretsAndRequiresIDForExecute(t *testin
 	}
 }
 
+func TestSQLSSettingsAcceptsLookupAndRejectsPasswords(t *testing.T) {
+	got, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"sqls_settings"}`))
+	if err != nil || got.Op != "sqls_settings" || got.ConnectionID != "" {
+		t.Fatalf("sqls_settings without id=%#v err=%v", got, err)
+	}
+	got, err = DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"sqls_settings","connection_id":"id"}`))
+	if err != nil || got.ConnectionID != "id" {
+		t.Fatalf("sqls_settings with id=%#v err=%v", got, err)
+	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"sqls_settings","password":"sentinel"}`)); err == nil {
+		t.Fatal("sqls_settings top-level password accepted")
+	}
+	if _, err := DecodeLine([]byte(`{"version":1,"type":"connection","request_id":"r","op":"sqls_settings","connection":{"name":"n","driver":"mysql","password":"sentinel"}}`)); err == nil {
+		t.Fatal("sqls_settings nested password accepted")
+	}
+}
+
 func TestResultProtocolRequiresOpaqueHandleAndKnownOperation(t *testing.T) {
 	if _, err := DecodeLine([]byte(`{"version":1,"type":"result","request_id":"r","op":"page"}`)); err == nil {
 		t.Fatal("result request without handle accepted")

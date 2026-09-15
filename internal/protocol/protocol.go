@@ -76,6 +76,26 @@ type Connection struct {
 	HasPassword bool   `json:"has_password,omitempty"`
 }
 
+// SQLSConfig is sqls' in-memory workspace settings. Passwd is a sqls field
+// name and must never be copied onto Connection.
+type SQLSConfig struct {
+	Connections []SQLSConnection `json:"connections"`
+}
+
+type SQLSConnection struct {
+	Alias          string            `json:"alias,omitempty"`
+	Driver         string            `json:"driver"`
+	DataSourceName string            `json:"dataSourceName,omitempty"`
+	Proto          string            `json:"proto,omitempty"`
+	User           string            `json:"user,omitempty"`
+	Passwd         string            `json:"passwd,omitempty"`
+	Host           string            `json:"host,omitempty"`
+	Port           int               `json:"port,omitempty"`
+	Path           string            `json:"path,omitempty"`
+	DBName         string            `json:"dbName,omitempty"`
+	Params         map[string]string `json:"params,omitempty"`
+}
+
 type Column struct {
 	Name         string `json:"name"`
 	DatabaseType string `json:"database_type"`
@@ -161,6 +181,7 @@ type Event struct {
 	Progress           bool               `json:"progress,omitempty"`
 	Bytes              int64              `json:"bytes,omitempty"`
 	Path               string             `json:"path,omitempty"`
+	SQLS               *SQLSConfig        `json:"sqls,omitempty"`
 }
 
 type ResultDifference struct {
@@ -209,7 +230,7 @@ func (r Request) Validate() error {
 			return errors.New("missing request_id")
 		}
 		switch r.Op {
-		case "list", "create", "update", "delete", "set_password", "test", "select":
+		case "list", "create", "update", "delete", "set_password", "test", "select", "sqls_settings":
 		default:
 			return errors.New("unknown connection operation")
 		}

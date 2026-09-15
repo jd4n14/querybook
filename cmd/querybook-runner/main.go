@@ -112,6 +112,30 @@ func (r *runner) connection(req protocol.Request) {
 		ctx, cancel := context.WithTimeout(testCtx, timeout)
 		err = executor.TestConnection(ctx, store.Resolve, req.ConnectionID)
 		cancel()
+	case "sqls_settings":
+		id := req.ConnectionID
+		if id == "" {
+			id = store.ActiveID()
+		}
+		if id == "" {
+			r.err(req, "no_active_connection", "no active connection")
+			return
+		}
+		var password []byte
+		var c protocol.Connection
+		c, password, err = store.Resolve(id)
+		if err == nil {
+			var cfg protocol.SQLSConfig
+			cfg, err = connections.SQLSConfig(c, password)
+			if err == nil {
+				event.SQLS = &cfg
+				event.Connection = &c
+				event.ActiveConnectionID = id
+			}
+		}
+		for i := range password {
+			password[i] = 0
+		}
 	}
 	if err != nil {
 		code, msg := "internal", "connection operation failed"
