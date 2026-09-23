@@ -62,6 +62,26 @@ COMMANDS                                                        *querybook-comma
 
 :QuerybookPrevColumn                                     *:QuerybookPrevColumn*
     Show the previous page of retained columns for the result under the cursor.
+    A column page is however many headers fit in the window, or `max_columns`
+    when that ceiling is set. Once the view scrolls, the first result column
+    stays visible.
+
+RESULT GRID                                                 *querybook-grid*
+
+After a result is rendered, `<leader>qe` enters the grid. The cursor stays on
+the SQL statement; the active cell is highlighted in the virtual table.
+
+    h / l        Previous or next column. The viewport follows. The first
+                result column stays pinned after the first scroll.
+    j / k        Previous or next row. Crossing the visible page updates it.
+    H / L        Previous or next screen of columns.
+    Enter        Open Inspect on the active cell.
+    Esc          Leave the grid.
+
+The footer names the cell (`row 6 · col 12/46 · billing_id`). A detail line
+under the grid shows the retained value, wrapped to the window, up to three
+lines. NULL stays visible. `<leader>qH` and `<leader>qL` still page columns
+from outside the grid.
 
 :QuerybookClear                                                   *:QuerybookClear*
     Clear the result attached to the statement under the cursor.
@@ -170,10 +190,12 @@ The inline display reads these limits, while retaining the complete result:
 
     preview_rows           Rows per inline viewport page (default 10)
     max_rows               Legacy alias for preview_rows when preview_rows is absent
-    max_columns            Columns per inline viewport page (default 12)
+    max_columns            Optional ceiling on columns per page. Unset, the page
+                           shows every column whose header fits the window.
     max_value_length       Legacy cell-length hint; cells clip to the window
-    max_column_width       Legacy cell-width hint; the last column flexes to fill
-                           the current window
+    max_column_width       Initial cell cap (default 32). Leftover window width
+                           goes to values that are still clipped. A column stays
+                           at least as wide as its header.
 
     runner_path             Optional installed querybook-runner executable
     connection_store_path   Optional managed metadata SQLite path
@@ -183,9 +205,11 @@ The inline display reads these limits, while retaining the complete result:
     batch_rows              JSONL batch row bound (default 200)
     batch_bytes             JSONL batch byte bound (default 512 KiB)
 
-The inline result table fills the current window width and clips cells to
-fit. Hidden row and column pages are labelled with the current range, and
-QuerybookInspect remains available for the full result. Top-level SELECT
+The inline result table fills the current window width. Columns keep their
+header width, and clipped cells share the leftover space. Hidden row and
+column pages are labelled with the current range. A scrolled column page
+keeps the first result column visible. QuerybookInspect remains available
+for the full result, including from the active grid cell. Top-level SELECT
 statements without an outer LIMIT receive a Go-runner `LIMIT 500`; explicit
 outer limits and nested or commented LIMIT text are preserved. The inline
 header reports this automatic limit separately from the visible row page and

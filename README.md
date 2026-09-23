@@ -153,6 +153,9 @@ separate local store).
 | `qc` | Global | Clear current result |
 | `<leader>qN` / `<leader>qP` | SQL buffer after a run | Next / previous row page |
 | `<leader>qL` / `<leader>qH` | SQL buffer after a run | Next / previous column page |
+| `<leader>qe` | SQL buffer after a run | Enter the result grid |
+
+`<leader>qe` marks a cell in the inline table. The editor cursor stays on the statement. `h` / `l` move one column and the viewport follows, keeping the first result column visible once the view has scrolled. `j` / `k` move one row and cross row pages. `H` / `L` jump a screen of columns. The active header and cell are highlighted, and a detail line under the grid shows that cell's retained value (up to three lines). `Enter` opens Inspect on that cell. `<Esc>` leaves the grid.
 
 ## Inspector
 
@@ -230,7 +233,8 @@ Querybook also disables Vim's default SQL omni maps (`<Left>` / `<Right>` →
 ```lua
 require("querybook").setup({
   preview_rows = 10,          -- rows per inline page
-  max_columns = 12,           -- columns per inline page
+  max_columns = nil,          -- nil fits the window; a number caps a column page
+  max_column_width = 32,      -- initial cap before leftover width goes to clipped cells
   timeout_ms = 30000,
   max_retained_rows = 10000,
   max_retained_bytes = 16 * 1024 * 1024,
@@ -243,8 +247,13 @@ require("querybook").setup({
 ```
 
 `max_rows` is still honored as a preview override when `preview_rows` is not
-set. The inline table fills the current window and clips cells to the allocated
-column width. Hidden row and column pages are labelled with the current range.
+set. The inline table fills the current window. Each visible column keeps at
+least its header width; cell text starts capped at `max_column_width` and any
+leftover window width goes to values that are still clipped. With
+`max_columns` unset, the page shows as many columns as those headers fit. A
+scrolled page keeps the first result column pinned and labels the gap
+(`columns 1, 30-41 of 46`). Hidden row pages are labelled with the current
+range.
 
 For a top-level `SELECT` without an outer `LIMIT`, the runner adds an
 authoritative `LIMIT 500` while leaving the buffer SQL unchanged. Nested

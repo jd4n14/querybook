@@ -363,21 +363,19 @@ local function redraw(state)
 end
 
 local function focus_column(state, column)
-  if not state.win or not vim.api.nvim_win_is_valid(state.win) then return end
-  if column then
-    for line, loc in ipairs(state.locations or {}) do
-      if loc and loc.kind == "field" and loc.column == column then
+  if not state.win or not vim.api.nvim_win_is_valid(state.win) or not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then return end
+  -- Header lines store no location, so the location list has holes and ipairs stops.
+  local function seek(match)
+    for line = 1, vim.api.nvim_buf_line_count(state.buf) do
+      local loc = state.locations and state.locations[line]
+      if loc and loc.kind == "field" and (not match or loc.column == match) then
         pcall(vim.api.nvim_win_set_cursor, state.win, { line, 0 })
-        return
+        return true
       end
     end
   end
-  for line, loc in ipairs(state.locations or {}) do
-    if loc and loc.kind == "field" then
-      pcall(vim.api.nvim_win_set_cursor, state.win, { line, 0 })
-      return
-    end
-  end
+  if column and seek(column) then return end
+  seek()
 end
 
 local function current_location(state)
@@ -610,6 +608,12 @@ function M.open(result, opts)
   else
     state.indices = vim.deepcopy(state.all_indices)
   end
+  if type(opts.match) == "number" and state.matching_count > 0 then
+    state.current_match = math.max(1, math.min(math.floor(opts.match), state.matching_count))
+    local source = state.indices[state.current_match]
+    if source ~= nil then state.current_source = tonumber(source) end
+    state.page = math.floor((state.current_match - 1) / state.page_size) + 1
+  end
   local buf = vim.api.nvim_create_buf(false, true); state.buf = buf; state.closed = false
   vim.api.nvim_create_autocmd("BufWipeout", { buffer = buf, once = true, callback = function() state.closed = true end })
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
@@ -617,6 +621,7 @@ function M.open(result, opts)
   redraw(state)
   local width, height = math.min(vim.o.columns - 4, 80), math.min(vim.o.lines - 6, math.max(8, vim.api.nvim_buf_line_count(buf) + 1))
   local win = vim.api.nvim_open_win(buf, true, { relative = "editor", row = math.floor((vim.o.lines - height) / 2), col = math.floor((vim.o.columns - width) / 2), width = width, height = height, style = "minimal", border = "rounded" }); state.win = win
+  if opts.column then focus_column(state, opts.column) end
   local function map(lhs, rhs, desc) vim.keymap.set("n", lhs, rhs, { buffer = buf, silent = true, desc = desc }) end
   map("]r", function() set_row(state, state.current_match + 1) end, "Querybook: next matching row")
   map("[r", function() set_row(state, state.current_match - 1) end, "Querybook: previous matching row")

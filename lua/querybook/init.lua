@@ -12,7 +12,7 @@ local defaults = {
   active_connection = nil,
   connections = {},
   preview_rows = 10,
-  max_columns = 12,
+  -- max_columns nil fits whatever headers the window can hold. A number is a ceiling.
   max_value_length = 128,
   max_column_width = 32,
   allow_writes = false,
@@ -127,7 +127,116 @@ local function release_result_handle(result)
   runner.result("release", { result_handle = handle }, function() end)
 end
 
+local GRID_KEYS = { "h", "l", "j", "k", "H", "L", "<CR>", "<Esc>" }
+
+local function view_count(result)
+  local source_rows = result.view_active and result.view_source_rows
+  return source_rows and #source_rows or #(result.rows or {})
+end
+
+local function unpinned_index(indexes, offset)
+  if not indexes or #indexes == 0 then return 1 end
+  if (offset or 0) == 0 then return indexes[1] end
+  for _, index in ipairs(indexes) do
+    if index ~= 1 then return index end
+  end
+  return indexes[1]
+end
+
+local function restore_grid_maps(bufnr)
+  local bs = state[bufnr]
+  if not bs or not bs.grid_maps then return end
+  for _, lhs in ipairs(GRID_KEYS) do
+    pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
+    local info = bs.grid_saved and bs.grid_saved[lhs]
+    if type(info) == "table" then
+      local opts = {
+        buffer = bufnr,
+        silent = info.silent == 1,
+        nowait = info.nowait == 1,
+        expr = info.expr == 1,
+        desc = info.desc,
+      }
+      if info.callback then
+        vim.keymap.set("n", lhs, info.callback, opts)
+      elseif info.rhs and info.rhs ~= "" then
+        opts.remap = info.noremap == 0
+        vim.keymap.set("n", lhs, info.rhs, opts)
+      end
+    end
+  end
+  bs.grid_maps, bs.grid_saved = false, nil
+  pcall(vim.api.nvim_del_augroup_by_name, "QuerybookGrid" .. bufnr)
+end
+
+local function clear_grid_state(bufnr, result)
+  if result then result.grid_active, result.grid_row, result.grid_col = false, nil, nil end
+  local bs = state[bufnr]
+  if bs and result and bs.grid_result_id == result.id then
+    bs.grid_result_id = nil
+    restore_grid_maps(bufnr)
+  end
+end
+
+local function install_grid_maps(bufnr)
+  local bs = buffer_state(bufnr)
+  if bs.grid_maps then return end
+  bs.grid_saved = {}
+  for _, lhs in ipairs(GRID_KEYS) do
+    local info = vim.fn.maparg(lhs, "n", false, true)
+    if type(info) == "table" and info.buffer == 1 and (info.callback or (info.rhs and info.rhs ~= "")) then
+      bs.grid_saved[lhs] = info
+    end
+  end
+  local function map(lhs, fn, desc)
+    vim.keymap.set("n", lhs, fn, { buffer = bufnr, silent = true, nowait = true, desc = desc })
+  end
+  map("h", function() M.grid_move("column", -1) end, "Querybook: previous column")
+  map("l", function() M.grid_move("column", 1) end, "Querybook: next column")
+  map("k", function() M.grid_move("row", -1) end, "Querybook: previous row")
+  map("j", function() M.grid_move("row", 1) end, "Querybook: next row")
+  map("H", function() M.grid_move("page", -1) end, "Querybook: previous column page")
+  map("L", function() M.grid_move("page", 1) end, "Querybook: next column page")
+  map("<CR>", function() M.grid_inspect() end, "Querybook: inspect active cell")
+  map("<Esc>", function() M.exit_grid() end, "Querybook: leave result grid")
+  bs.grid_maps = true
+  local group = vim.api.nvim_create_augroup("QuerybookGrid" .. bufnr, { clear = true })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = group,
+    buffer = bufnr,
+    callback = function()
+      local current = state[bufnr]
+      local result = current and current.grid_result_id and current.results[current.grid_result_id]
+      if not result or not result.grid_active then return end
+      local pos = result_position(bufnr, result)
+      local cursor = vim.api.nvim_win_get_cursor(0)[1]
+      local parsed = parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+      local owner = pos and parser.statement_at(parsed, pos)
+      local here = parser.statement_at(parsed, cursor)
+      if not owner or not here or owner.start_line ~= here.start_line or owner.end_line ~= here.end_line then
+        vim.schedule(function()
+          if vim.api.nvim_buf_is_valid(bufnr) then M.exit_grid(bufnr) end
+        end)
+      end
+    end,
+  })
+end
+
+local function move_column_page(bufnr, result, direction)
+  local config = render_config(bufnr)
+  local before = result.column_offset or 0
+  result.column_offset = render.shift_column_offset(result, config, direction)
+  if result.grid_active then
+    if direction > 0 and result.column_offset == before then
+      result.grid_col = math.max(1, #(result.columns or {}))
+    else
+      result.grid_col = unpinned_index(render.visible_columns(result, config), result.column_offset)
+    end
+  end
+end
+
 remove_result = function(bufnr, result)
+  clear_grid_state(bufnr, result)
   if result.extmark then pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, result.extmark) end
   if M._inspect_state and M._inspect_state.result == result then
     M._inspect_state.closed = true
@@ -181,6 +290,7 @@ function M.run(opts)
       vim.keymap.set("n", "<leader>qP", "<Cmd>QuerybookPrevPage<CR>", { buffer = bufnr, silent = true, desc = "Querybook: previous result page" })
       vim.keymap.set("n", "<leader>qL", "<Cmd>QuerybookNextColumn<CR>", { buffer = bufnr, silent = true, desc = "Querybook: next result columns" })
       vim.keymap.set("n", "<leader>qH", "<Cmd>QuerybookPrevColumn<CR>", { buffer = bufnr, silent = true, desc = "Querybook: previous result columns" })
+      vim.keymap.set("n", "<leader>qe", function() M.enter_grid() end, { buffer = bufnr, silent = true, desc = "Querybook: enter result grid" })
       vim.b[bufnr].querybook_viewport_maps = true
     end
     local function execute_one(item)
@@ -246,6 +356,7 @@ function M.run(opts)
           -- therefore cannot retain a prior filtered view or inspector state.
           result.view_active, result.view_id, result.filter_expression, result.view_source_rows, result.view_count = false, nil, nil, nil, nil
           result.row_offset, result.column_offset = 0, 0
+          clear_grid_state(bufnr, result)
           if M._inspect_state and M._inspect_state.result == result then
             M._inspect_state.closed = true
             if M._inspect_state.win and vim.api.nvim_win_is_valid(M._inspect_state.win) then pcall(vim.api.nvim_win_close, M._inspect_state.win, true) end
@@ -274,17 +385,88 @@ function M.page(axis, direction)
   local result = current and find_current_result(bufnr, current)
   if not result then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
   local rows = result.rows or {}
-  local columns = result.columns or {}
   if axis == "row" then
     local page_size = M.config.preview_rows or M.config.max_rows or 10
     local source_rows = result.view_active and result.view_source_rows
     local row_count = source_rows and #source_rows or #rows
     result.row_offset = math.max(0, math.min((result.row_offset or 0) + direction * page_size, math.max(0, row_count - 1)))
+    if result.grid_active then
+      result.grid_row = row_count == 0 and 0 or math.min(row_count, (result.row_offset or 0) + 1)
+    end
   else
-    local page_size = M.config.max_columns or 12
-    result.column_offset = math.max(0, math.min((result.column_offset or 0) + direction * page_size, math.max(0, #columns - 1)))
+    move_column_page(bufnr, result, direction)
   end
   render_result(bufnr, result)
+end
+
+function M.exit_grid(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local bs = state[bufnr]
+  if not bs then return end
+  local result = bs.grid_result_id and bs.results[bs.grid_result_id]
+  clear_grid_state(bufnr, result)
+  if result then render_result(bufnr, result) end
+end
+
+function M.enter_grid()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor = vim.api.nvim_win_get_cursor(0)[1]
+  local current = parser.statement_at(parser.parse(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)), cursor)
+  local result = current and find_current_result(bufnr, current)
+  if not result then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
+  if #(result.columns or {}) == 0 then return vim.notify("Querybook: result has no columns", vim.log.levels.WARN) end
+  local bs = buffer_state(bufnr)
+  if bs.grid_result_id and bs.grid_result_id ~= result.id then
+    local previous = bs.results[bs.grid_result_id]
+    if previous then
+      previous.grid_active = false
+      render_result(bufnr, previous)
+    end
+  end
+  local count = view_count(result)
+  result.grid_active = true
+  result.grid_row = count == 0 and 0 or math.min(math.max(1, (result.row_offset or 0) + 1), count)
+  local visible = render.visible_columns(result, render_config(bufnr))
+  result.grid_col = visible[1] or 1
+  bs.grid_result_id = result.id
+  install_grid_maps(bufnr)
+  render_result(bufnr, result)
+end
+
+function M.grid_move(kind, direction)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local bs = state[bufnr]
+  local result = bs and bs.grid_result_id and bs.results[bs.grid_result_id]
+  if not result or not result.grid_active then return end
+  local columns = result.columns or {}
+  if kind == "page" then
+    move_column_page(bufnr, result, direction)
+  elseif kind == "column" then
+    if #columns == 0 then return end
+    result.grid_col = math.max(1, math.min((result.grid_col or 1) + direction, #columns))
+    result.column_offset = render.reveal_column(result, render_config(bufnr), result.grid_col)
+  elseif kind == "row" then
+    local count = view_count(result)
+    if count == 0 then return end
+    result.grid_row = math.max(1, math.min((result.grid_row or 1) + direction, count))
+    local page = M.config.preview_rows or M.config.max_rows or 10
+    result.row_offset = math.floor((result.grid_row - 1) / page) * page
+  end
+  render_result(bufnr, result)
+end
+
+function M.grid_inspect()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local bs = state[bufnr]
+  local result = bs and bs.grid_result_id and bs.results[bs.grid_result_id]
+  if not result or not result.grid_active then return vim.notify("Querybook: no result near cursor", vim.log.levels.WARN) end
+  M._inspect_state = inspect_view.open(result, {
+    runner = runner,
+    page_size = M.config.preview_rows or 10,
+    match = result.grid_row,
+    column = result.grid_col,
+    on_view_change = function(updated) render_result(bufnr, updated) end,
+  })
 end
 
 function M.next_page() M.page("row", 1) end

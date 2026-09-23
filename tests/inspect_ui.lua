@@ -329,6 +329,12 @@ local keymaps = vim.api.nvim_buf_get_keymap(state.buf, "n")
 local seen = {}
 for _, map in ipairs(keymaps) do seen[map.lhs] = true end
 assert(seen["[r"] and seen["]r"] and seen["[p"] and seen["]p"] and seen["p"] and seen["yv"] and seen["yr"] and seen["yn"] and seen["yj"] and seen["K"], "inspector navigation, pin, and copy mappings installed")
+local focused = inspect.open(result, { runner = fake, page_size = 2, match = 2, column = 3 })
+assert(focused.current_match == 2 and focused.current_source == 1, "inspect opens on the requested row")
+local cursor = vim.api.nvim_win_get_cursor(focused.win)
+local focused_line = vim.api.nvim_buf_get_lines(focused.buf, cursor[1] - 1, cursor[1], false)[1]
+assert(focused_line:find("empty", 1, true), "inspect opens on the requested column")
+vim.api.nvim_win_close(focused.win, true)
 vim.api.nvim_win_close(state.win, true)
 print("querybook inspector tests passed")
 vim.cmd("qa!")
