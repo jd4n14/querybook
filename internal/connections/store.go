@@ -29,6 +29,13 @@ type Error struct {
 func (e *Error) Error() string        { return e.Code + ": " + e.Message }
 func errf(code, message string) error { return &Error{Code: code, Message: message} }
 
+func credentialError(err error, fallback string) error {
+	if errors.Is(err, credentials.ErrUnavailable) {
+		return errf("credential_store", err.Error())
+	}
+	return errf("credential_store", fallback)
+}
+
 type Store struct {
 	db          *sql.DB
 	credentials *credentials.Store
@@ -190,8 +197,10 @@ func (s *Store) Create(c protocol.Connection, password *string) (protocol.Connec
 		}
 		if err := s.credentials.Add(c.ID, []byte(*password)); err != nil {
 			_ = tx.Rollback()
-			_ = s.credentials.Delete(c.ID)
-			return protocol.Connection{}, errf("credential_store", "could not store credential")
+			if !errors.Is(err, credentials.ErrAlreadyExists) {
+				_ = s.credentials.Delete(c.ID)
+			}
+			return protocol.Connection{}, credentialError(err, "could not store credential")
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -277,7 +286,7 @@ func (s *Store) SetPassword(id, password string) error {
 		return errf("credential_store", "credential store unavailable")
 	}
 	if err := s.credentials.Set(id, []byte(password)); err != nil {
-		return errf("credential_store", "could not store credential")
+		return credentialError(err, "could not store credential")
 	}
 	if _, err := s.db.Exec(`UPDATE connections SET credential_present=1 WHERE id=?`, id); err != nil {
 		return errf("partial_failure", "credential stored but metadata could not be updated")
@@ -295,6 +304,9 @@ func (s *Store) Delete(id string) error {
 	}
 	if c.HasPassword && s.credentials != nil {
 		if err := s.credentials.Delete(id); err != nil && !errors.Is(err, credentials.ErrNotFound) {
+			if errors.Is(err, credentials.ErrUnavailable) {
+				return errf("partial_failure", "metadata retained: "+err.Error())
+			}
 			return errf("partial_failure", "credential removed status is unknown; metadata retained")
 		}
 	}
@@ -346,7 +358,7 @@ func (s *Store) Resolve(id string) (protocol.Connection, []byte, error) {
 		return protocol.Connection{}, nil, errf("credential_not_found", "credential not found")
 	}
 	if err != nil {
-		return protocol.Connection{}, nil, errf("credential_store", "could not read credential")
+		return protocol.Connection{}, nil, credentialError(err, "could not read credential")
 	}
 	return c, p, nil
 }

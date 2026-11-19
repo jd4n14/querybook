@@ -1,6 +1,6 @@
 // Package credentials stores connection secrets outside Querybook's metadata
-// database. On macOS, secrets are kept in the user's login keychain through
-// Security.framework. The package intentionally has no plaintext fallback.
+// database. It uses Keychain on macOS and Secret Service on Linux.
+// The package intentionally has no plaintext fallback.
 package credentials
 
 import (
@@ -15,8 +15,7 @@ var ErrUnavailable = errors.New("credential store unavailable")
 const Service = "com.jd4n14.querybook.connections"
 
 // Backend is the small operation surface used by Store and its tests. The
-// keychain implementation is deliberately injectable so metadata tests never
-// need to touch a user's real keychain.
+// native backend is injectable so metadata tests can use an isolated store.
 type Backend interface {
 	Add(service, account string, secret []byte) error
 	Get(service, account string) ([]byte, error)
@@ -60,6 +59,8 @@ func (s *Store) Set(account string, secret []byte) error {
 	}
 	if err := s.backend.Add(s.service, account, secret); err == nil {
 		return nil
+	} else if errors.Is(err, ErrUnavailable) {
+		return err
 	} else if !errors.Is(err, ErrAlreadyExists) {
 		// Backends that do not expose a duplicate sentinel still support an
 		// existing-item update (the native backend does expose it).

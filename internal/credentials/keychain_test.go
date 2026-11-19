@@ -1,7 +1,10 @@
 package credentials
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"runtime"
 	"testing"
 
 	"github.com/google/uuid"
@@ -80,14 +83,21 @@ func TestNativeBackendCRUDSynthetic(t *testing.T) {
 	if runtimeUnavailable() {
 		t.Skip("native keychain unavailable on this platform/build")
 	}
+	if runtime.GOOS == "linux" && os.Getenv("QUERYBOOK_TEST_SECRET_SERVICE") != "1" {
+		t.Skip("set QUERYBOOK_TEST_SECRET_SERVICE=1 to test with a real Linux keyring")
+	}
 	s := New(nil)
 	account := "test-" + uuid.NewString()
 	defer func() { _ = s.Delete(account) }()
-	if err := s.Add(account, []byte("querybook-keychain-sentinel")); err != nil {
+	want := []byte("  synthetic\x00password\xff\n")
+	if err := s.Add(account, want); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.Add(account, []byte("duplicate")); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate add: %v", err)
+	}
 	got, err := s.Get(account)
-	if err != nil || string(got) != "querybook-keychain-sentinel" {
+	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("get=%q err=%v", got, err)
 	}
 	if err := s.Set(account, []byte("querybook-keychain-updated")); err != nil {
@@ -103,9 +113,10 @@ func TestNativeBackendCRUDSynthetic(t *testing.T) {
 	if _, err := s.Get(account); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete=%v", err)
 	}
-	account = "test-" + uuid.NewString()
-	defer func() { _ = s.Delete(account) }()
-	if err := s.Add(account, []byte{}); err != nil {
+	if err := s.Delete(account); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete missing credential: %v", err)
+	}
+	if err := s.Set(account, []byte{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err = s.Get(account)
