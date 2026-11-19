@@ -13,7 +13,7 @@ data editor.
 - Inline result tables anchored to each statement, with independent stale and
   error state
 - Native connection manager; passwords never live in Lua config or YAML
-- macOS Keychain storage for credentials (`com.jd4n14.querybook.connections`)
+- Native credential storage in macOS Keychain or Linux Secret Service
 - Read-only by default; writes require `:QuerybookRun!` or `allow_writes`
 - Local [CEL](https://cel.dev) filters over retained rows (the SQL is not rewritten)
 - Floating inspector for typed cells, JSON expansion, and lossless copies
@@ -30,8 +30,19 @@ data editor.
 | sqls (optional) | Schema-aware completion when present on `PATH` |
 
 SQLite uses [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite):
-binaries are larger than a CGo build, but they do not need system SQLite
-headers or a C compiler.
+binaries do not need system SQLite headers.
+
+### Linux
+
+The standard build uses CGo and `libsecret-1`. Install a C compiler,
+`pkg-config`, and the libsecret development files. For example, Arch Linux
+and Omarchy provide these in `gcc`, `pkgconf`, and `libsecret`. Debian and
+Ubuntu provide them in `build-essential`, `pkg-config`, and `libsecret-1-dev`.
+
+To save passwords, start Neovim in a D-Bus user session with a Secret Service
+provider such as GNOME Keyring. Set up and unlock its default collection
+before adding a password. Connections without passwords also work in headless
+sessions and with a `CGO_ENABLED=0 make build` runner.
 
 ## Install
 
@@ -76,7 +87,8 @@ make build
 ### Quick demo
 
 From a checkout, open the included notebook and run `:QuerybookRun` on each
-query:
+query. An empty connection store starts with a default local SQLite database.
+If you already have saved connections, select one with `:QuerybookConnections`.
 
 ```sh
 nvim --clean --cmd "set rtp^=$PWD" examples/demo.sql
@@ -275,6 +287,10 @@ there is no persistent SQL session or shared daemon across Neovim instances.
 ```sh
 make test
 ```
+
+On Linux, run `QUERYBOOK_TEST_SECRET_SERVICE=1 make test` to include the
+native credential and MySQL-to-sqls checks. They use synthetic credentials
+and an unlocked default keyring.
 
 Focused Neovim suites:
 

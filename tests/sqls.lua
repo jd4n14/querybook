@@ -69,13 +69,11 @@ end
 vim.api.nvim_create_autocmd("VimLeavePre", { callback = restore })
 
 local store = vim.fn.tempname() .. ".connections.sqlite"
-local db = vim.fn.tempname() .. ".sqlite3"
+vim.env.XDG_DATA_HOME = vim.fn.tempname()
 local querybook = require("querybook")
 querybook.setup({
   runner_path = root .. "/bin/querybook-runner",
   connection_store_path = store,
-  connections = { sqlite = { driver = "sqlite", path = db } },
-  active_connection = "sqlite",
   timeout_ms = 5000,
 })
 local connections = require("querybook.connections")
@@ -117,7 +115,6 @@ end
 -- 1 + 5. Missing sqls: Querybook still runs, no LSP start, no config.yml.
 sqls_installed = false
 starts = {}
-vim.fn.writefile({}, db)
 local cwd = vim.fn.getcwd()
 local before_cwd = glob_sqls_configs(cwd)
 local before_tmp = glob_sqls_configs(vim.fn.fnamemodify(store, ":h"))
@@ -137,6 +134,7 @@ end
 assert(vim.wait(5000, function()
   return connections.active() ~= nil and not texts():find("RUNNING", 1, true) and texts():find("1 retained rows", 1, true) ~= nil
 end), "sqlite QuerybookRun without sqls")
+assert(vim.fn.filereadable(vim.fn.stdpath("data") .. "/querybook.sqlite3") == 1, "default SQLite database created")
 vim.wait(200)
 assert(#starts == 0, "sqls must not start when missing")
 assert(vim.deep_equal(before_cwd, glob_sqls_configs(cwd)), "cwd sqls config.yml created")
@@ -195,14 +193,12 @@ assert(second.settings.sqls.connections[1].dataSourceName ~= resolved_a, "second
 
 -- 4. mysql sqls_settings returns passwd to LSP only, never to the Lua cache.
 local sentinel = "querybook-sqls-sentinel@/"
-local mysql
-local mysql_ok, mysql_err = pcall(function()
-  mysql = request("create", {
+-- Linux desktop tests can opt in to writing a synthetic item to Secret Service.
+if vim.fn.has("linux") == 0 or vim.env.QUERYBOOK_TEST_SECRET_SERVICE == "1" then
+  local mysql = request("create", {
     connection = { name = "sqls-mysql", driver = "mysql", host = "127.0.0.1", user = "root", database = "app" },
     password = sentinel,
   })
-end)
-if mysql_ok then
   local mysql_id = mysql.connection.id
   request("select", { connection_id = mysql_id })
   connections.list(function() end)
@@ -227,8 +223,6 @@ if mysql_ok then
   assert(vim.wait(5000, function() return #starts > starts_before_force end), "force restart of the same connection")
   assert(starts[#starts].config.settings.sqls.connections[1].passwd == sentinel, "force restart still uses mysql passwd")
   request("delete", { connection_id = mysql_id })
-else
-  error("mysql create failed: " .. tostring(mysql_err))
 end
 
 -- Vim sql ftplugin <Left>/<Right> maps flash Noice's Calculator cmdline.

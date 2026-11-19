@@ -138,9 +138,26 @@ function M.ensure_active(callback)
     -- explicit QuerybookConnectionsImport action.
     if not c and not err and vim.tbl_isempty(M._connections) then
       local configured = M.config and M.config.connections and M.config.connections[M.config.active_connection or "sqlite"]
-      local default = configured and configured.driver == "sqlite" and wire_metadata(configured) or {
-        name = "sqlite", driver = "sqlite", path = vim.fn.stdpath("data") .. "/querybook.sqlite3"
-      }
+      local default
+      if configured and configured.driver == "sqlite" then
+        default = wire_metadata(configured)
+      else
+        local dir = vim.fn.stdpath("data")
+        local path = dir .. "/querybook.sqlite3"
+        local uv = vim.uv or vim.loop
+        pcall(vim.fn.mkdir, dir, "p")
+        local file, open_error = uv.fs_open(path, "a", 384) -- 0600
+        if not file then
+          M._loading = false
+          local waiters = M._waiters; M._waiters = {}
+          for _, waiter in ipairs(waiters) do
+            waiter(nil, "Querybook: could not open the default SQLite database: " .. tostring(open_error))
+          end
+          return
+        end
+        uv.fs_close(file)
+        default = { name = "sqlite", driver = "sqlite", path = path }
+      end
       default.name = default.name or M.config.active_connection or "sqlite"
       runner.connection("create", { connection = default }, function(event, create_err)
         if not create_err and event.connection then

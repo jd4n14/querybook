@@ -182,7 +182,9 @@ The native metadata form accepts name, driver, host, port, database, username,
 socket, path, and charset. SQLite requires path. Passwords are captured only
 for create and password-change actions through a hidden prompt and are sent
 immediately over the private stdin request; they are never displayed or kept
-in Lua state. Results capture the selected connection profile and database
+in Lua state. On Linux, saving passwords requires an unlocked default
+collection in the session's Secret Service. On macOS, passwords are stored
+in Keychain. Results capture the selected connection profile and database
 when they execute; changing the active connection does not rewrite existing
 result metadata.
 
